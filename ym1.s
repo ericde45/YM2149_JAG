@@ -4,13 +4,11 @@
 ;	OK - debugger les enveloppes : $8A/$0A : bit 7 = ne pas modifier l'env
 ;	OK - gerer le changement de bloc + bouclage
 ;	OK - init digidrums
-;	- gérer digidrums : ; apres mise en place de DG/lecture des registres : si digdrum en cours sur une voie/ PSG_flag_digidrum_voie_A=1? , N&T=1 // force Noise = 1 et Tone = 1 / ni l'un ni l'autre. Noise et Tone OFF
-;   -  // tester si PSG_flag_effets_voie_A=1 => lire 2 octets de .b , bit 14 = SID/bit 15 = DG  
-;	- // PSG_offset_en_cours_digidrum_A=0/PSG_flag_SID_voie_A=0/PSG_flag_digidrum_voie_A=1/numero DG=PSG_register8/9/10// PSG_pointeur_sample_digidrum_voie_A/PSG_longeur_sample_digidrum_voie_A // on garde 11 bits = frequence => PSG_increment_digidrum_voie_A
-;	- se servir du pointeur mémoire sur le sample ( PSG_pointeur_sample_digidrum_voie_ ) comme flag de DG
+;	OK - gérer digidrums 
 
-;	- init SID
-;	- gérer SID
+;	- init SID :  nb sid *  somme des tailles de chaque sid // pas besoin de la repetition. allouer de la ram. créer une table : adresse du sid dans la ram DSP.L, adresse de la fin du SID dans la RAM DSP // convertir le SID en volume Jaguar
+;			- $62 SID de 4.L = 1568 octets
+;	- gérer SID : un increment sur 31 bit, qui donne un résultat 0 ou 1, multiplié par le volume du sid à jouer => dans le volume de la voie
 ;	- init Buzzer
 ;	- gérer Buzzer
 ;	- init Sinus Sid
@@ -257,7 +255,79 @@ YM_pas_de_digidrums:
 	beq.s		YM_pas_de_SID						; => pas de SID
 
 ; TODO : gérer les SID
-	illegal
+; - une table qui pointe sur le début du sample SID, fin du sample SID, en RAM normale ( utilisée une fois par replay)
+; - un sample par SID : .L * taille du SID, volume converti : RAM DSP ( lue en I2S )
+
+; d7=nb de samples SID
+
+	moveq		#0,d1
+	move.l		d7,d6
+	subq.l		#1,d6
+	move.l		a0,a3
+
+YM_init_boucle_calcul_taille_samples_SID:
+	move.w		(a0)+,d0			; taille du sample SID
+	addq.l		#2,a0				; on saute par dessus la repetition
+	add.l		d0,d1
+	dbf			d6,YM_init_boucle_calcul_taille_samples_SID
+	
+; d1 = taille totales des samples
+; * 4 * 2 = *8 pour la RAM normale
+; * 4 pour la RAM DSP
+
+	move.l		d1,d0
+	addq.l		#1,d0				; +1 pour le pointeur de fin du dernier sample SID
+	lsl.l		#2,d0				; * 4
+	bsr			YM_malloc			; alloue nb sid * 8 octets
+	move.l		d0,a1				; A1=pointeur table 
+	move.l		d0,YM_DSP_pointeur_sur_table_infos_samples_SID
+
+	move.l		d1,d0
+	lsl.l		#2,d0				; *4 pour la RAM DSP
+	bsr			YM_malloc_DSP
+	move.l		d0,a2				; A1=pointeur sur buffer samples SID en RAM DSP
+	move.l		d0,YM_DSP_pointeur_sur_samples_SID_ram_DSP
+
+	lea			YM_DSP_table_de_volumes,a4
+	
+	move.l		d7,d6				; d6=nb de SIDs
+	subq.l		#1,d6
+
+YM_init_boucle_copie_un_sample_SID_entier:
+	moveq		#0,d1
+	move.w		(a3)+,d1			; d1 = taille du sample
+	addq.l		#2,a3				; passe par dessus la repetition
+	subq.l		#1,d1
+
+	move.l		a2,(a1)+			; pointeur debut de sample SID
+
+YM_init_boucle_copie_octets_un_sample_SID:	
+	moveq		#0,d0
+	move.b		(a0)+,d0			; octet de volume du sample SID
+	lsl.l		#2,d0				; * 4
+	move.l		(a4,d0.l),d0		; d0=volume en 16 bits	
+	move.l		d0,(a2)+			; dans la RAM DSP
+	dbf			d1,YM_init_boucle_copie_octets_un_sample_SID
+
+; pas besoin de la fin puisque = au début du suivant
+	;move.l		a2,(a1)+			; pointeur FIN de sample SID
+
+	dbf			d6,YM_init_boucle_copie_un_sample_SID_entier
+
+	move.l		a2,(a1)+			; pointeur la fin du dernier sample SID uniquement
+
+; saute les vmax qui sont à la suite  = nb de SID
+
+	add.l		d7,a0
+
+; arrondit A0:
+	move.l		a0,d0
+	btst		#0,d0
+    beq.s		YM_init_ym7_OK_arrondit_SID
+    addq.l 		#1,a0
+YM_init_ym7_OK_arrondit_SID:		
+
+
 
 YM_pas_de_SID:
 ; debut init 	Buzzer
@@ -403,6 +473,36 @@ YM_malloc_pas_d_arrondi:
 YM_malloc_boucle_clean_ram:
 	move.b		d0,(a0)+
 	dbf			d2,YM_malloc_boucle_clean_ram
+	
+	move.l		d3,d0
+
+	movem.l		(sp)+,d1-d3/a0
+	rts
+
+; ---------------------------------------
+; allocation de mémoire version RAM DSP
+; malloc de d0, retour avec  un pointeur dans d0
+; d0 => forcément un multiple de 4
+; ---------------------------------------
+
+YM_malloc_DSP:
+
+	movem.l		d1-d3/a0,-(sp)
+
+	move.l		debut_ram_libre_DSP,d1
+	move.l		d1,a0
+	move.l		d1,d3
+	add.l		d0,d1
+	move.l		d1,debut_ram_libre_DSP
+	
+	move.l		d0,d2
+	moveq.l		#0,d0
+	lsr.l		#2,d2		; 4 octets par 4 octets
+	subq.l		#1,d2
+
+YM_malloc_boucle_clean_ram_DSP:
+	move.l		d0,(a0)+
+	dbf			d2,YM_malloc_boucle_clean_ram_DSP
 	
 	move.l		d3,d0
 
@@ -1839,6 +1939,8 @@ YM_DSP_table_digidrums:
 		dc.l		0			; pointeur fin du sample 
 	.endr
 
+YM_DSP_pointeur_sur_samples_SID_ram_DSP:		dc.l		0
+
 YM_DSP_fin:
 
 	
@@ -1865,26 +1967,25 @@ fichier_ym7:
 	;.incbin			"Tomchi_Sidified.ym7"					; SID
 	;.incbin		"Mad_Max_Buzzer.ym7"					; YM7 buzzer + SID
 	;.incbin		"DMA_Sc_Fantasia_main.ym7"					; YM7 SID
-	;.incbin		"Furax_Virtualescape_main.ym7"				; YM7 SID
+	.incbin			"YM/Furax_Virtualescape_main.ym7"				; YM7 SID
 	; .incbin		"MadMax_Virtual_Esc_End.ym7"			; YM7 SID voie A
-	.incbin		"YM/PYM_main_menu.ym7"					; YM7 avec enveloppe et digidrums
+	
+	;.incbin		"YM/PYM_main_menu.ym7"					; YM7 avec enveloppe et digidrums
 	;.incbin		"YM/buzztone.ym7"						; digidrums sur B & C	- OK
-
 	;.incbin		"YM/ancool_atari_baby.ym7"						; ENV au début, pas d effet ensuite : OK
 	;.incbin		"YM/Jess_For_Your_Loader.ym7"				; YM7 sans effets avec env
 	;.incbin		"YM/Decade_boot.ym7"					; YM7 avec env
 
 	.even
 
+debut_ram_libre_DSP:		dc.l			YM_DSP_fin
 debut_ram_libre:			dc.l			FIN_RAM
 
 	.bss
 	.phrase
-YMTMP:			ds.l				1
-YMTMP2:			ds.l				1
-YMTMP3:			ds.l				1
 
 
+YM_DSP_pointeur_sur_table_infos_samples_SID:	ds.l		1
 
 YM_nombre_de_frames_totales:			ds.l				1
 YM_frequence_replay:					ds.w				1
@@ -1917,84 +2018,3 @@ YM_tableau_des_blocs_decompresses:
 FIN_RAM:
 
 
-; algo random DSP
-; R0/R1/R2/R3/R4 
-;			MOVEI		#DSP_RNG_number, R0		; 00f1c24c (00001b5c)	 R0 = #$00f1b4a0								= U235SE_rng
-;			LOAD		(R0), R1			; 00f1c252 (00001b62)	 RD = long at addess in R1
-;			MOVEQ		#$01, R4			; 00f1c254 (00001b64)	 R4 = #$01
-;			MOVE		R1, R2				; 00f1c256 (00001b66)	 R2 = R1
-;			MOVE		R1, R3				; 00f1c258 (00001b68)	 R3 = R1
-;			SHRQ		#$02, R3			; 00f1c25a (00001b6a)	 R3 shift right by #$02
-;			AND			R4, R2				; 00f1c25c (00001b6c)	 R2 = R4 and R2
-;			AND			R4, R3				; 00f1c25e (00001b6e)	 R3 = R4 and R3
-;			XOR			R2, R3				; 00f1c260 (00001b70)	 R3 = R2 xor R3
-;			MOVE		R1, R2				; 00f1c262 (00001b72)	 R2 = R1
-;			MOVE		R3, R4				; 00f1c264 (00001b74)	 R4 = R3
-;			SHRQ		#$01, R2			; 00f1c266 (00001b76)	 R2 shift right by #$01
-;			SHLQ		#$10, R4			; 00f1c268 (00001b78)	 R16 shift left by #$ebde350b
-;			//MOVEI		#$ffff, R6			; 00f1c26a (00001b7a)	 R6 = #$0000ffff
-;			OR			R2, R4				; 00f1c270 (00001b80)	 R4 = R2 or R4
-;			//AND			R6, R3				; 00f1c272 (00001b82)	 R3 = R6 and R3
-;			//MOVEI		#$f1b4a4, R2		; 00f1c274 (00001b84)	 R2 = #$00f1b4a4
-;			//BTST		#$00, R3			; 00f1c27a (00001b8a)	 Test bit 0 in R3
-;			//JR			EQ, LBL000e			; 00f1c27c (00001b8c)	 Conditional Relative Jump to LBL000e
-;			//NOP								; 00f1c27e (00001b8e)	 No OPeration
-;			//MOVEI		#$7f, R3			; 00f1c280 (00001b90)	 R3 = #$0000007f
-;			//JR			LBL000f				; 00f1c286 (00001b96)	 Conditional Relative Jump to LBL000f
-;			//NOP								; 00f1c288 (00001b98)	 No OPeration
-;LBL000e:	
-;			//MOVEI		#$ff80, R3			; 00f1c28a (00001b9a)	 R3 = #$0000ff80
-;LBL000f:	
-;			STORE		R4, (R0)			; 00f1c292 (00001ba2)	 addr in R0 <- long in R4 
-;			//STORE		R3, (R2)			; 00f1c296 (00001ba6)	 addr in R2 <- long in R3 
-
-
-; sur amiga:
-
-;                          .data:00c05968 70 01                            moveq #1,%d0
-;                           .data:00c0596a 74 01                            moveq #1,%d2
-;                           .data:00c0596c 43 f9 00 c1 c6 50                lea table_noise_0x00c1c650,%a1
-;boucle:						   
-;                           .data:00c05972 32 00                            movew %d0,%d1
-;                           .data:00c05974 e6 49                            lsrw #3,%d1
-;                           .data:00c05976 b1 41                            eorw %d0,%d1
-;                           .data:00c05978 c2 42                            andw %d2,%d1
-;                           .data:00c0597a d2 41                            addw %d1,%d1
-;                           .data:00c0597c 48 41                            swap %d1
-;                           .data:00c0597e b3 80                            eorl %d1,%d0
-;                           .data:00c05980 e2 88                            lsrl #1,%d0
-;                           .data:00c05982 55 c3                            scs %d3
-;                           .data:00c05984 12 c3                            moveb %d3,%a1@+
-;                           .data:00c05986 51 cf ff ea                      dbf %d7,0x00c05972
-	
-
-
-; ----------------------------------
-;static	const ymint		Env00xx[8]={ 1,0,0,0,0,0,0,0 };
-;static	const ymint		Env01xx[8]={ 0,1,0,0,0,0,0,0 };
-;static	const ymint		Env1000[8]={ 1,0,1,0,1,0,1,0 };
-;static	const ymint		Env1001[8]={ 1,0,0,0,0,0,0,0 };
-;static	const ymint		Env1010[8]={ 1,0,0,1,1,0,0,1 };
-;static	const ymint		Env1011[8]={ 1,0,1,1,1,1,1,1 };
-;static	const ymint		Env1100[8]={ 0,1,0,1,0,1,0,1 };
-;static	const ymint		Env1101[8]={ 0,1,1,1,1,1,1,1 };
-;static	const ymint		Env1110[8]={ 0,1,1,0,0,1,1,0 };
-;static	const ymint		Env1111[8]={ 0,1,0,0,0,0,0,0 };
-;static	const ymint *	EnvWave[16] = {	Env00xx,Env00xx,Env00xx,Env00xx,
-;										Env01xx,Env01xx,Env01xx,Env01xx,
-;										Env1000,Env1001,Env1010,Env1011,
-;										Env1100,Env1101,Env1110,Env1111};
-
-;static	ymint ymVolumeTable[16] =
-;{	62,161,265,377,580,774,1155,1575,2260,3088,4570,6233,9330,13187,21220,32767};
-
-;- faire en 3 étapes, -1,0,1
-; - boucler sur 0,1
-; phase de 3 étapes
-; 3 * 16 * 10 *4 = 1920 octets
-
-; sinon : 4 phases différentes,  de 16*4 = 64 * 4 = 256 octets
-
-
-
-;-----------------------------------
