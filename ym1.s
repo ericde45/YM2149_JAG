@@ -832,6 +832,8 @@ YM_DSP_replay_sample_pas_de_generation_nouveau_Noise:
 
 ;---- ====> R18 = mask current Noise ----
 
+
+;--------------------------
 ; ----- gerer digidrum A
 	movei	#YM_DSP_pointeur_sample_digidrum_voie_A,R27					; pointeur << 21 + 11 bits de virgule 21:11
 	load	(R27),R26
@@ -939,6 +941,11 @@ YM_DSP_replay_DG_pas_fin_de_sample_voie_C:
 	store	R22,(R24)			; pointe sur le volume C
 
 YM_DSP_replay_sample_pas_de_digidrums_voie_C:
+
+
+;--------------------------
+; gerer les SID
+;--------------------------
 
 
 ;---- ====> R18 = mask current Noise ----
@@ -1438,6 +1445,9 @@ DSP_lecture_registre10_pas_env:
 
 DSP_lecture_registre13_pas_env:
 
+
+;--------------------------------
+; gestion des effets par voie
 ; ------- effet sur voie A ?
 	movei		#YM_flag_effets_voie_A,R3
 	load		(R3),R3
@@ -1453,6 +1463,8 @@ DSP_lecture_registre13_pas_env:
 	movei		#DSP_lecture_registre_effet_voie_A_pas_de_DG,R4
 	btst		#7,R2
 	jump		eq,(R4)
+
+; ---	
 ; digidrums sur la voie A
 	moveq		#%111,R5
 	movei		#YM_DSP_table_prediviseur,R6
@@ -1484,6 +1496,15 @@ DSP_lecture_registre13_pas_env:
 	addq		#4,R6						; passe au pointeur de fin du sample
 	store		R5,(R6)						; stocke increment sample DG e: 21:11
 
+; force volume sur volA, mixerTA et mixerNA = $FFFFFFFF
+	movei		#YM_DSP_pointeur_sur_source_du_volume_A,R3
+	movei		#-1,R2
+	movei		#YM_DSP_volA,R5
+	movei		#YM_DSP_Mixer_NA,R4
+	store		R5,(R3)
+	movei		#YM_DSP_Mixer_TA,R7
+	store		R2,(R4)
+	store		R2,(R7)
 	
 	
 	
@@ -1557,6 +1578,18 @@ DSP_lecture_registre_effet_voie_A_pas_d_effet:
 	addq		#4,R6						; passe au pointeur de fin du sample
 	store		R5,(R6)						; stocke increment sample DG e: 21:11
 
+; force volume sur volB, mixerTB et mixerNB = $FFFFFFFF
+	movei		#YM_DSP_pointeur_sur_source_du_volume_B,R3
+	movei		#-1,R2
+	movei		#YM_DSP_volB,R5
+	movei		#YM_DSP_Mixer_NB,R4
+	store		R5,(R3)
+	movei		#YM_DSP_Mixer_TB,R7
+	store		R2,(R4)
+	store		R2,(R7)
+	
+
+
 DSP_lecture_registre_effet_voie_B_pas_de_DG:
 
 
@@ -1608,6 +1641,17 @@ DSP_lecture_registre_effet_voie_B_pas_d_effet:
 	store		R4,(R6)						; stocke fin sample DG en 21:11
 	addq		#4,R6						; passe au pointeur de fin du sample
 	store		R5,(R6)						; stocke increment sample DG e: 21:11
+
+; force volume sur volC, mixerTC et mixerNC = $FFFFFFFF
+	movei		#YM_DSP_pointeur_sur_source_du_volume_C,R3
+	movei		#-1,R2
+	movei		#YM_DSP_volC,R5
+	movei		#YM_DSP_Mixer_NC,R4
+	store		R5,(R3)
+	movei		#YM_DSP_Mixer_TC,R7
+	store		R2,(R4)
+	store		R2,(R7)
+	
 
 DSP_lecture_registre_effet_voie_C_pas_de_DG:
 
@@ -1967,11 +2011,11 @@ fichier_ym7:
 	;.incbin			"Tomchi_Sidified.ym7"					; SID
 	;.incbin		"Mad_Max_Buzzer.ym7"					; YM7 buzzer + SID
 	;.incbin		"DMA_Sc_Fantasia_main.ym7"					; YM7 SID
-	.incbin			"YM/Furax_Virtualescape_main.ym7"				; YM7 SID
+	;.incbin			"YM/Furax_Virtualescape_main.ym7"				; YM7 SID
 	; .incbin		"MadMax_Virtual_Esc_End.ym7"			; YM7 SID voie A
 	
 	;.incbin		"YM/PYM_main_menu.ym7"					; YM7 avec enveloppe et digidrums
-	;.incbin		"YM/buzztone.ym7"						; digidrums sur B & C	- OK
+	.incbin		"YM/buzztone.ym7"						; digidrums sur B & C	- OK
 	;.incbin		"YM/ancool_atari_baby.ym7"						; ENV au début, pas d effet ensuite : OK
 	;.incbin		"YM/Jess_For_Your_Loader.ym7"				; YM7 sans effets avec env
 	;.incbin		"YM/Decade_boot.ym7"					; YM7 avec env
