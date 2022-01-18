@@ -1,6 +1,3 @@
-; fantasia main, sid sur le B, rien actuellement
-; pourri des le debut, SID B !
-
 
 ; YM7 sur Jaguar
 ;
@@ -17,20 +14,20 @@
 ;	OK - init Buzzer
 ;	OK - gérer Buzzer
 
-; 	- passer le noise à la formule : seed = seed * 1103515245 + 12345;
-
 ;	- init Sinus Sid
 ;	- gérer Sinus Sid = 1 voie séparée
 
 ;	OK - replay à fréquence variable
 ;	- autoriser I2S pendant le timer 1
 
+;	OK - décompresser LZ4 au fur et à mesure. en utilisant le 68000.
+;	OK - décompresser LZ4 au fur et à mesure. en utilisant le DSP.
 
 ;	- simplifier la lecture des effets : BTST sur 1 seul registre
 ;	- with values decreasing from 8000 to zero. This will avoid a loud click on start up
 ;	- dans routine I2S : utiliser 3 registres pour les 3 volumes + registre sur table des volumes
 ;	- forcer pointeur sur volume pour digidrums dans Timer 1
-;	- stéréo !!!! : placer 1 voie 100% a gauche, 1 voie 100% a droite, et 1 voie 60% a gauche/40% a droite
+;	- stéréo !!!! : placer 1 voie 100% a gauche, 1 voie 100% a droite, et 1 voie 60% a gauche/40% a droite : utiliser des % pour droite et gauche pour chaque canal A B C D, et multiplier
 ;	- placer la copie des 2 samples en tout debut de routine interruption I2S ( vue la variabilité liée à la génération du Noise )
 
 ; timer I2S = generation des samples
@@ -51,17 +48,18 @@
 ; algo de la routine qui genere les samples
 ; 3 canaux : increment onde carrée * 3 , increment noise, volume voie * 3 , increment enveloppe
 
-
+CLEAR_BSS			.equ			0									; 1=efface toute la BSS jusqu'a la fin de la ram centrale
 DSP_DEBUG			.equ			0
 DSP_DEBUG_T1		.equ			0
-DSP_DEBUG_BUZZER	.equ			0
+DSP_DEBUG_BUZZER	.equ			0									; 0=Buzzer ON / 1=pas de gestion du buzzer
 YM_avancer			.equ			1									; 0=on avance pas / 1=on avance
 YM_position_debut_dans_musique		.equ		0
 YM_Samples_SID_en_RAM_DSP			.equ		1						; 0 = samples SID en RAM 68000 / 1 = samples SID en RAM DSP.
-DSP_random_Noise_generator_method	.equ		3						; algo to generate noise random number : 1 & 3 are OK
+YM_LZ4_depack_au_DSP				.equ		1						; 1=depack LZ4 au DSP pendant le replay / 0=68000
+DSP_random_Noise_generator_method	.equ		4						; algo to generate noise random number : 1 & 4 (LFSR) OK uniquement // 2 & 3 : KO
 
 	
-DSP_Audio_frequence					.equ			32000				; 22300=>17 => 23082 / 
+DSP_Audio_frequence					.equ			25000				; 22300=>17 => 23082 / 
 YM_frequence_YM2149					.equ			2000000				; 2 000 000 = Atari ST , 1 000 000 Hz = Amstrad CPC, 1 773 400 Hz = ZX spectrum 
 YM_DSP_frequence_MFP				.equ			2457600
 YM_DSP_precision_virgule_digidrums	.equ			11
@@ -99,18 +97,9 @@ DSP_ISP			equ		(DSP_USP-(4*DSP_STACK_SIZE))
 .text
 .68000
 ;.noclear
-
-	;move.l		#$1234,EDZ_compteur_reset_offset_entier_voie_A
-
-	lea			buffer_de_debug,a0
-	move.l		a0,pointeur_buffer_de_debug
-
-	move.l		#INITSTACK, sp	
-	move.w		#$06C7, VMODE			; 320x256
-	move.w		#$100,JOYSTICK
-
 ; clear BSS
 
+	.if			CLEAR_BSS=1
 	lea			DEBUT_BSS,a0
 	lea			$200000,a1
 	moveq		#0,d0
@@ -119,6 +108,31 @@ boucle_clean_BSS:
 	move.b		d0,(a0)+
 	cmp.l		a0,a1
 	bne.s		boucle_clean_BSS
+	.endif
+
+;check ntsc ou pal:
+
+	moveq		#0,d0
+	move.w		JOYBUTS ,d0
+
+	move.l		#26593900,frequence_Video_Clock			; PAL
+
+	
+	btst		#4,d0
+	beq.s		jesuisenpal
+jesuisenntsc:
+	move.l		#26590906,frequence_Video_Clock			; NTSC
+jesuisenpal:
+
+
+	;move.l		#$1234,EDZ_compteur_reset_offset_entier_voie_A
+
+	;lea			buffer_de_debug,a0
+	;move.l		a0,pointeur_buffer_de_debug
+
+	move.l		#INITSTACK, sp	
+	move.w		#$06C7, VMODE			; 320x256
+	move.w		#$100,JOYSTICK
 
 
 ; ------------------------
@@ -176,29 +190,86 @@ boucle_copie_bloc_DSP:
 
 
 toto:
-	lea			buffer_de_debug,a0
-	move.l		pointeur_buffer_de_debug,a1
+
+	;move.l		PSG_compteur_frames_restantes,d0
+	;move.l		PSG_ecart_entre_les_registres_ymdata,d1
+	;move.l		YM_pointeur_actuel_ymdata,A0
+	
+	move.l		EDZTMP1,d1
+	move.l		EDZTMP2,d2
+	move.l		EDZTMP3,d3
+
+;$40D0
+	;lea			buffer_de_debug,a0
+	;move.l		pointeur_buffer_de_debug,a1
 
 
-	move.l		YM_DSP_pointeur_sample_SID_voie_C,d0
-;	cmp.l		#0,d0
-;	beq.s		ok_toto
+	;move.l		YM_DSP_pointeur_sample_SID_voie_B,d0
+	;cmp.l		#0,d0
+	;beq.s		ok_toto
 	
 ; $40B8
-	move.l		EDZTMP1,d1
-	move.l		YM_frequence_replay,d2
-	;move.l		YM_DSP_increment_sample_SID_voie_C,d1 
-	;move.l		YM_DSP_offset_sample_SID_voie_C,d2
-	move.l		YM_DSP_taille_sample_SID_voie_C,d3
-	move.l		YM_DSP_registre10,d4
-	move.l		YM_DSP_pointeur_sur_table_infos_samples_SID,d5
-	move.l		YM_DSP_volC,d6
-	move.l		YM_DSP_pointeur_sur_source_du_volume_C,d7
-; $40DA
-	nop
+	;move.l		EDZTMP1,d1
+	;move.l		YM_frequence_replay,d2
+	
+	;move.l		YM_DSP_increment_sample_SID_voie_B,d1 
+	;move.l		YM_DSP_offset_sample_SID_voie_B,d2
+	;move.l		YM_DSP_taille_sample_SID_voie_B,d3
+	;move.l		YM_DSP_registre9,d4
+	;move.l		YM_DSP_pointeur_sur_table_infos_samples_SID,d5
+	;move.l		YM_DSP_volB,d6
+	;move.l		YM_DSP_pointeur_sur_source_du_volume_B,d7
+; $4102
+	;nop
+	
 	
 ;ok_toto:
+	.if			YM_LZ4_depack_au_DSP=0
+	move.l		YM_LZ4_nb_bloc_LZ4_disponibles,d0
+	cmp.l		#2,d0
+	bge			toto
 
+	move.l		YM_ecart_entre_frames_blocs,d2
+
+	move.l		YM_LZ4_pointeur_actuel_datas_compressees,a0
+	move.l		YM_LZ4_numero_dernier_bloc_decompresse,d1
+	addq.l		#1,d1
+	cmp.l		YM_nombre_de_blocs_lZ4,d1
+	blt			YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc
+	
+	bne			YM_boucle_principale_decompression_d_un_bloc_bouclage
+; on est sur le dernier bloc
+	move.l		YM_ecart_entre_frames_dernier_bloc,d2
+	bra.s		YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc
+	
+	
+YM_boucle_principale_decompression_d_un_bloc_bouclage:
+	moveq		#1,d1
+	move.l		YM_LZ4_pointeur_datas_compressees_premier_bloc,a0
+
+YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
+	
+	move.l		d1,YM_LZ4_numero_dernier_bloc_decompresse
+	move.l		d2,YM_LZ4_nb_frames_bloc_LZ4_suivant
+
+	move.l		YM_LZ4_pointeur_bloc_LZ4_suivant,a1
+
+; taille du bloc compressé: => d0
+	move.l		YM_LZ4_pointeur_tailles_des_blocs,a2
+	subq.w		#1,d1
+	add.w		d1,d1
+	moveq		#0,d0
+	move.w		(a2,d1.w),d0
+	lea			(a0,d0.w),a2
+	move.l		a2,YM_LZ4_pointeur_actuel_datas_compressees
+	
+	movem.l	d1-d4/a3-a4,-(sp)
+	bsr			lz4_depack_smallest
+	movem.l		(sp)+,d1-d4/a3-a4
+	
+	addq.l		#1,YM_LZ4_nb_bloc_LZ4_disponibles
+	.endif
+	
 	
 	bra			toto
 
@@ -242,6 +313,11 @@ YM_init_ym7_pas_effet_sur_voie_B:
 	addq.l		#2,d6						; + 2 registres à lire lors du replay
 	move.l		d1,YM_flag_effets_voie_C
 YM_init_ym7_pas_effet_sur_voie_C:
+
+	btst		#3,d0						; effet buzzer ?
+	beq.s		YM_init_ym7_pas_effet_Buzzer
+	addq.l		#2,d6						; + 2 registres à lire lors du replay
+YM_init_ym7_pas_effet_Buzzer:
 
 	btst		#4,d0						; effet D Sinus Sid ?
 	beq.s		YM_init_ym7_pas_effet_Sinus_Sid
@@ -491,103 +567,156 @@ YM_pas_de_Buzzer:
 
 YM_pas_de_Sinus_Sid:
 
+; -------------------------
+; - debut decompression LZ4
+; -------------------------
+
+; $0040
+; taille d'un bloc decompressé.w
+; taille du dernier bloc decompressé.w
+; nombre de blocs LZ4 .w
+; taille de chaque bloc compressé .w * N
+; **** données compressées
+
 	lea			2(a0),a0						; saute la valeur 64 ( LZ4 )
 
 	moveq		#0,d0
 	
 	move.w	 	(a0)+,d0
-	move.w		d0,YM_ecart_entre_frames_blocs				; ecart entre les frames pour les N-1 premiers blocs / format YM7 = .w= ?   par exemple 0C10   ( stocké en C0576E / ecart entre les frames ?
+	move.l		d0,YM_ecart_entre_frames_blocs				; ecart entre les frames pour les N-1 premiers blocs / format YM7 = .w= ?   par exemple 0C10   ( stocké en C0576E / ecart entre les frames ?
 	move.l		d0,PSG_ecart_entre_les_registres_ymdata
 	sub.l		#YM_position_debut_dans_musique,d0
 	move.l		d0,PSG_compteur_frames_restantes
 	
 	move.w		(a0)+,d0
 	move.l		d0,YM_ecart_entre_frames_dernier_bloc		; ecart entre les frames pour le dernier blocs / format YM7 = .w= ?   par exemple 0C0E   ( stocké en C05784
+
+; nb blocs LZ4:
 	moveq		#0,d0
 	move.w		(a0)+,d0										; nombre de bloc compressés / format YM7 = .w= ? de 1 à 70 / par exemple 0004	( stocké en C0576A ) = nombre de blocs de donn�es compress�es ?
 	move.l		d0,YM_nombre_de_blocs_lZ4
 
+	move.l		YM_ecart_entre_frames_blocs,d1
+	cmp.w		#2,d0
+	bge.s		YM_init_plus_de_2_blocs
+	
+	move.l		YM_ecart_entre_frames_dernier_bloc,d1
+YM_init_plus_de_2_blocs:
+	move.l		d1,YM_LZ4_nb_frames_bloc_LZ4_suivant
+
 ; A0=pointeur sur les tailles des blocs
 	move.l		a0,YM_LZ4_pointeur_tailles_des_blocs
 
-	lea			YM_tableau_des_blocs_decompresses,a2
-	moveq		#0,d1
-	move.w		YM_ecart_entre_frames_blocs,d1
-
-YM_init_ym7_boucle_creation_liste_des_blocs_decompresses_copie_ecarts:
-	addq.l		#4,a2												; saute par dessus le pointeur sur le bloc
-	subq		#1,d0
-	beq.s		YM_init_ym7_creation_liste_des_blocs_decompresses_copie_ecarts_dernier_bloc
-	
-	move.l		d1,(a2)+
-	bra.s		YM_init_ym7_boucle_creation_liste_des_blocs_decompresses_copie_ecarts
-
-YM_init_ym7_creation_liste_des_blocs_decompresses_copie_ecarts_dernier_bloc:
-	move.l		YM_ecart_entre_frames_dernier_bloc,d1
-	move.l		d1,(a2)+
 
 
-; allouer la ram pour compteur de frames * nb d'octets par frame
 
-	move.l		YM_nombre_de_frames_totales,d0
-	moveq		#0,d1
+; decompresser le 1er bloc
+	move.l		YM_ecart_entre_frames_blocs,d0
 	move.w		YM_nb_registres_par_frame,d1
 	mulu		d1,d0
+; allouer la RAM
+	move.l		#65536,d0
 ; d0=taille à allouer
-	bsr.s		YM_malloc
+	bsr			YM_malloc
 ; d0=pointeur sur la zone memoire vide
+	move.l		d0,YM_LZ4_pointeur_bloc_LZ4_en_cours
+	move.l		d0,a1		; = dest de le decompression
 
-	move.l		d0,YM_pointeur_origine_ymdata
-	move.l		d0,YM_LZ4_pointeur_destination_bloc_actuel
-	
-; decompression des blocs
-; - lire taille du bloc compressés
-; - 
-
-	move.l		YM_LZ4_pointeur_destination_bloc_actuel,a1
-
-	move.l		YM_LZ4_pointeur_tailles_des_blocs,a4
-	move.l		YM_nombre_de_blocs_lZ4,d5
-	move.l		d5,d4
-	add.w		d5,d5						; nb bloc * 2
-	lea			(a4,d5.w),a5				; A5 = pointeur sur les donnees du bloc 1
-
-	lea			YM_tableau_des_blocs_decompresses,a2
-
-YM_init_ym7_boucle_decomp_blocs:
-	move.l		a1,(a2)+					; pointeur sur bloc decompresse
-	addq.l		#4,a2						; saute le nb de frame du bloc .l
+	move.l		YM_LZ4_pointeur_tailles_des_blocs,a0
+	move.l		a0,a2
+	move.l		YM_nombre_de_blocs_lZ4,d1
+	add.l		d1,d1			; nb blocs  * 2 pour .w
+	add			d1,a0			; a0 pointe sur les données du 1er bloc
+	move.l		a0,YM_LZ4_pointeur_datas_compressees_premier_bloc
 	
 	moveq		#0,d0
-	move.w		(a4)+,d0					; taille du bloc compresse
-
-	move.l		a5,a0						; A0=pointeur sur packed bloc
-	add.l		d0,a5						; A5 = pointe sur bloc LZ4 suivant
-
+	move.w		(a2)+,d0		; taille du bloc 1
+	move.l		a0,a5
+	add.l		d0,a5			; A5=pointeur bloc LZ4 compressé suivant
+	
+	
 ; input :
 ; / a0.l = packed buffer 
 ; / a1.l = output buffer 
 ; /  d0.l = LZ4 packed block size (in bytes)
-	bsr		lz4_depack
+	movem.l	d1-d4/a3-a4,-(sp)
+	bsr			lz4_depack_smallest
+	movem.l		(sp)+,d1-d4/a3-a4
 
 ; / a1=fin du bloc decompresse
 
 
-	subq		#1,d4
-	bgt			YM_init_ym7_boucle_decomp_blocs
+; decompresser le 2eme bloc
 
-	lea			YM_tableau_des_blocs_decompresses,a2
-	move.l		(a2),a1						; A1 = pointeur sur premier bloc decompresse
-	move.l		a1,YM_pointeur_actuel_ymdata
+	move.l		YM_nombre_de_blocs_lZ4,d7
+	subq.l		#1,d7
+	bgt.s		YM_init_au_moins_2_blocs
+; 1 seul bloc dans le YM7
+; on met le 1er bloc une 2eme fois
+	move.l		YM_ecart_entre_frames_blocs,d0
+	move.w		YM_nb_registres_par_frame,d1
+	mulu		d1,d0
+
+	move.l		#65536,d0
+	move.l		d0,d2
+
+	bsr			YM_malloc	
 	
+	move.l		d0,a1
+	move.l		YM_LZ4_pointeur_bloc_LZ4_en_cours,a0
+	subq.l		#1,d2
+
+YM_init_recopie_premier_bloc:
+	move.b		(a0)+,(a1)+
+	dbf			d2,YM_init_recopie_premier_bloc
+
+	move.l		#1,YM_LZ4_numero_dernier_bloc_decompresse
+	
+	bra			YM_init_continuer_apres_deuxieme_bloc
+
+YM_init_au_moins_2_blocs:
+	move.l		YM_ecart_entre_frames_blocs,d0
+	move.w		YM_nb_registres_par_frame,d1
+	mulu		d1,d0
+; allouer la RAM
+	move.l		#65536,d0
+
+; d0=taille à allouer
+	bsr.s		YM_malloc
+; d0=pointeur sur la zone memoire vide
+	move.l		d0,YM_LZ4_pointeur_bloc_LZ4_suivant
+	move.l		d0,a1		; = dest de le decompression
+	move.l		a5,a0
 	moveq		#0,d0
-	move.l		d0,YM_numero_bloc_en_cours
-	
-	.if	 YM_position_debut_dans_musique<>0
-	move.l	#YM_position_debut_dans_musique,d0
-	add.l	d0,a1
+	move.w		(a2)+,d0		; taille du bloc 2
+	add.l		d0,a5			; A5=pointeur bloc LZ4 compressé suivant
+; input :
+; / a0.l = packed buffer 
+; / a1.l = output buffer 
+; /  d0.l = LZ4 packed block size (in bytes)
+	movem.l	d1-d4/a3-a4,-(sp)
+	bsr			lz4_depack_smallest
+	movem.l		(sp)+,d1-d4/a3-a4
+; / a1=fin du bloc decompresse
+
+	move.l		a5,YM_LZ4_pointeur_actuel_datas_compressees
+
+
+; on a 2 blocs decompressés
+;	- premier bloc => pointeur_bloc_LZ4_en_cours
+;	- 2eme bloc => YM_LZ4_pointeur_bloc_LZ4_suivant
+
+	move.l		#2,YM_LZ4_numero_dernier_bloc_decompresse
+
+YM_init_continuer_apres_deuxieme_bloc:
+
+	move.l		#2,YM_LZ4_nb_bloc_LZ4_disponibles
+
+
+	move.l		YM_LZ4_pointeur_bloc_LZ4_en_cours,a1
+	move.l		#YM_position_debut_dans_musique,d0
+	add.l		d0,a1
 	move.l		a1,YM_pointeur_actuel_ymdata
-	.endif
 	
 	rts
 
@@ -603,12 +732,12 @@ YM_malloc:
 	move.l		debut_ram_libre,d1
 	move.l		d1,a0
 	move.l		d1,d3
-	add.l		d0,d1
 ; arrondit multiple de 2
-    btst		#0,d1
+    btst		#0,d0
 	beq.s		YM_malloc_pas_d_arrondi
-	addq.l		#1,d1
+	addq.l		#1,d0
 YM_malloc_pas_d_arrondi:
+	add.l		d0,d1
 	move.l		d1,debut_ram_libre
 	
 	move.l		d0,d2
@@ -679,10 +808,10 @@ depack_chunk_lz4:
 ;		 d0.l : LZ4 packed block size (in bytes)
 ;
 ; output: none
-; a1=pointe sur la fin du bloc decompresse
+; 			a1.l = pointe sur la fin du bloc decompresse
 ;
 
-lz4_depack:
+lz4_depack_normal:
 			movem.l	d1-d4/a3-a4,-(sp)
 
 			lea		0(a0,d0.l),a4	; packed buffer end
@@ -765,7 +894,96 @@ lz4_depack:
 
 
 
+;---------------------------------------------------------
+;
+;	LZ4 block 68k small depacker
+;	Written by Arnaud Carré ( @leonard_coder )
+;	https://github.com/arnaud-carre/lz4-68k
+;
+;	LZ4 technology by Yann Collet ( https://lz4.github.io/lz4/ )
+;
+;---------------------------------------------------------
 
+; Smallest version: depacker is only 72 bytes
+;
+; input: a0.l : packed buffer
+;		 a1.l : output buffer
+;		 d0.l : LZ4 packed block size (in bytes)
+;
+; output: none
+;
+
+lz4_depack_smallest:
+			lea		0(a0,d0.l),a4	; packed buffer end
+			moveq	#0,d0
+			moveq	#0,d2
+			moveq	#15,d4
+
+.tokenLoop_smallest:	
+			move.b	(a0)+,d0
+			move.l	d0,d1
+			lsr.b	#4,d1
+			beq.s	.lenOffset_smallest
+
+.readLen_smallest1:	
+			cmp.b	d1,d4
+			bne.s	.readEnd_smallest1
+.readLoop_smallest1:	
+			move.b	(a0)+,d2
+			add.l	d2,d1				; final len could be > 64KiB
+			not.b	d2
+			beq.s	.readLoop_smallest1
+		
+.readEnd_smallest1:	
+
+.litcopy_smallest:
+			move.b	(a0)+,(a1)+
+			subq.l	#1,d1			; block could be > 64KiB
+			bne.s	.litcopy_smallest
+
+			; end test is always done just after literals
+			cmpa.l	a0,a4
+			beq.s	.readEnd_smallest
+			
+.lenOffset_smallest:	
+			move.b	(a0)+,d2	; read 16bits offset, little endian, unaligned
+			move.b	(a0)+,-(a7)
+			move.w	(a7)+,d1
+			move.b	d2,d1
+			movea.l	a1,a3
+			sub.l	d1,a3		; d1 bits 31..16 are always 0 here
+			moveq	#$f,d1
+			and.w	d0,d1
+
+.readLen_smallest2:	
+			cmp.b	d1,d4
+			bne.s	.readEnd_smallest2
+.readLoop_smallest2:	
+			move.b	(a0)+,d2
+			add.l	d2,d1				; final len could be > 64KiB
+			not.b	d2
+			beq.s	.readLoop_smallest2
+		
+.readEnd_smallest2:
+
+			addq.l	#4,d1
+.copy_smallest:
+			move.b	(a3)+,(a1)+
+			subq.l	#1,d1
+			bne.s	.copy_smallest
+			bra.s	.tokenLoop_smallest
+
+.readLen_smallest:	
+			cmp.b	d1,d4
+			bne.s	.readEnd_smallest
+.readLoop_smallest:	
+			move.b	(a0)+,d2
+			add.l	d2,d1				; final len could be > 64KiB
+			not.b	d2
+			beq.s	.readLoop_smallest
+		
+.readEnd_smallest:	
+			rts
 
 
 
@@ -1034,6 +1252,27 @@ YM_DSP_replay_sample_offset_env_negatif:
 	store	R21,(R23)
 	.endif
 
+	.if		DSP_random_Noise_generator_method=4
+; generer un nouveau pseudo random LFSR YM : https://www.smspower.org/Development/YM2413ReverseEngineeringNotes2018-05-13
+	MOVEI	#YM_DSP_current_Noise, R23		
+	LOAD	(R23), R21
+	
+	moveq	#1,R27
+	move	R21,R20
+	and		R27,R20				; 	bool output = state & 1;
+
+	shrq	#1,R21				; 	state >>= 1;
+	
+	cmpq	#0,R20
+	jr		eq,YM_DSP_replay_sample_LFSR_bit_0_egal_0
+	
+	nop
+	movei	#$400181,R20
+	xor		R20,R21
+	
+YM_DSP_replay_sample_LFSR_bit_0_egal_0:
+	store	R21,(R23)
+	.endif
 
 ; calcul masque 
 	MOVEQ	#$01,R20
@@ -1483,9 +1722,9 @@ YM_DSP_replay_sample_pas_de_SID_voie_C:
 DSP_LSP_routine_interruption_Timer1:
 	.if		DSP_DEBUG_T1
 ; change la couleur du fond
-	movei	#$077,R26
-	movei	#BG,r27
-	storew	r26,(r27)
+	movei	#$077,R1
+	movei	#BG,r0
+	storew	r1,(r0)
 	.endif
 
 ;-------------------------------------------------------------------------------------------------
@@ -1663,11 +1902,11 @@ DSP_lecture_registre6_pas_zero:
 	loadb		(R1),R2						; registre 8
 	add			R8,R1	
 
-	moveq		#%1111,R3
 	move		R2,R4
 	movei		#YM_DSP_registre8,R6
-	movei		#YM_DSP_volE,R5
+	moveq		#%1111,R3
 	store		R4,(R6)					; sauvegarde la valeur de volume sur 16, pour DG
+	movei		#YM_DSP_volE,R5
 	and			R3,R4
 	
 	shlq		#2,R4					; volume sur 16 *4 
@@ -1695,11 +1934,11 @@ DSP_lecture_registre8_pas_volume_A:
 	loadb		(R1),R2						; registre 9
 	add			R8,R1	
 
-	moveq		#%1111,R3
 	move		R2,R4
 	movei		#YM_DSP_registre9,R6
-	movei		#YM_DSP_volE,R5
+	moveq		#%1111,R3
 	store		R4,(R6)					; sauvegarde la valeur de volume sur 16, pour DG
+	movei		#YM_DSP_volE,R5
 	and			R3,R4
 
 	shlq		#2,R4					; volume sur 16 *4 
@@ -1727,11 +1966,11 @@ DSP_lecture_registre9_pas_env:
 	loadb		(R1),R2						; registre 10
 	add			R8,R1	
 
-	moveq		#%1111,R3
 	move		R2,R4
 	movei		#YM_DSP_registre10,R6
-	movei		#YM_DSP_volE,R5
+	moveq		#%1111,R3
 	store		R4,(R6)					; sauvegarde la valeur de volume sur 16, pour DG
+	movei		#YM_DSP_volE,R5
 	and			R3,R4
 	
 	shlq		#2,R4					; volume sur 16 *4 
@@ -2299,6 +2538,7 @@ DSP_lecture_registre_effet_voie_C_pas_d_effet:
 	jump		eq,(R4)
 	;nop
 
+
 ; Buzzer stop
 	moveq		#0,R0
 	movei		#YM_DSP_increment_envbuzzer_en_cours,R3
@@ -2309,7 +2549,6 @@ DSP_lecture_registre_effet_voie_C_pas_d_effet:
 	add			R8,R1
 	loadb		(R1),R9						; octet 2 effet sur la voie : 8 bits du bas = R9=diviseur
 	add			R8,R1
-
 
 	btst		#7,R2						; bit 15-8 : test bit 15 de la valeur lue : si =0 => on saute toute la partie mise en place du buzzer
 	jump		eq,(R4)
@@ -2383,9 +2622,9 @@ DSP_lecture_registre_effet_Buzzer_pas_d_effet:
 ;---> precalculer les valeurs qui ne bougent pas pendant 1 VBL entiere	
 
 ; debug avec buffer pour voir les valeurs
-	movei		#pointeur_buffer_de_debug,R0
-	movei		#buffer_de_debug,R1
-	store		R1,(R0)
+	;movei		#pointeur_buffer_de_debug,R0
+	;movei		#buffer_de_debug,R1
+	;store		R1,(R0)
 	
 
 
@@ -2405,29 +2644,20 @@ DSP_lecture_registre_effet_Buzzer_pas_d_effet:
 	jump		ne,(R5)
 	nop
 ; fin du bloc en cours
-	movei		#YM_numero_bloc_en_cours,R4
-	load		(R4),R5
-	addq		#1,R5					; numero du bloc en cours + 1
-	movei		#YM_nombre_de_blocs_lZ4,R6
-	load		(R6),R6
-	cmp			R6,R5
-	jr			ne,DSP_lecture_registres_player_VBL_YM7_pas_fin_de_tous_les_blocs
-	nop
-	moveq		#0,R5
-	
-DSP_lecture_registres_player_VBL_YM7_pas_fin_de_tous_les_blocs:
-	store		R5,(R4)			; YM_numero_bloc_en_cours
 
-; lire les infos du nouveau bloc
-	movei		#YM_tableau_des_blocs_decompresses,R6
-	shlq		#3,R5			; *8
-	add			R5,R6
-	load		(R6),R1			; pointeur sur le nouveau bloc
-	addq		#4,R6
-	load		(R6),R3			; nb frames du nouveau bloc
-	movei		#PSG_ecart_entre_les_registres_ymdata,R5
-	store		R3,(R5)
-		
+	movei		#YM_LZ4_pointeur_bloc_LZ4_en_cours,R4
+	movei		#YM_LZ4_pointeur_bloc_LZ4_suivant,R5
+	load		(R4),R6										; passe suivant dans en cours, et en cours dans suivant pour remplissage
+	load		(R5),R1
+	store		R1,(R4)
+	store		R6,(R5)
+	movei		#YM_LZ4_nb_bloc_LZ4_disponibles,R7			; decremente le nb de blocs dispos
+	load		(R7),R8
+	subq		#1,R8
+	movei		#YM_LZ4_nb_frames_bloc_LZ4_suivant,R5
+	store		R8,(R7)
+
+	load		(R5),R3
 	
 DSP_lecture_registres_player_VBL_YM7_pas_fin_du_bloc:
 	store		R1,(R0)			; YM_pointeur_actuel_ymdata
@@ -2440,9 +2670,9 @@ DSP_lecture_registres_player_VBL_YM7_pas_fin_du_bloc:
 	
 	.if		DSP_DEBUG_T1
 ; change la couleur du fond
-	movei	#$000,R26
-	movei	#BG,r27
-	storew	r26,(r27)
+	movei	#$000,R0
+	movei	#BG,R1
+	storew	R0,(R1)
 	.endif
 
 ;------------------------------------	
@@ -2534,8 +2764,8 @@ DSP_routine_init_DSP:
 	div		R11,R10
 	or		R10,R10
 	move	R10,R13
-	movei	#EDZTMP1,R12
-	store	R13,(R12)
+	;movei	#EDZTMP1,R12
+	;store	R13,(R12)
 	
 	subq	#1,R13					; -1 pour parametrage du timer 1
 	
@@ -2573,23 +2803,261 @@ DSP_routine_init_DSP:
 
 
 
-
-
-	
-
-
-
+	.if		YM_LZ4_depack_au_DSP=0
 DSP_boucle_centrale:
-
-
 	movei	#DSP_boucle_centrale,R20
 	jump	(R20)
 	nop
+	.endif
 
+; deccompression LZ4 au DSP
+
+	.if		YM_LZ4_depack_au_DSP=1
+DSP_boucle_centrale:
+	movei	#YM_LZ4_nb_bloc_LZ4_disponibles,R0
+	load	(R0),R1
+	cmpq	#1,R1
+	jr		hi,DSP_boucle_centrale
+	nop
+
+; on doit decompresser un bloc
+	movei	#YM_ecart_entre_frames_blocs,R22
+	movei	#YM_LZ4_pointeur_actuel_datas_compressees,R20
+	movei	#YM_LZ4_numero_dernier_bloc_decompresse,R21
+	movei	#YM_nombre_de_blocs_lZ4,R23
+	load	(R22),R2
+	load	(R20),R10
+	load	(R21),R1
+	load	(R23),R13
+	addq	#1,R1
+	cmp		R13,R1
+	jr		mi,YM_DSP_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc
+	nop
+	jr		ne,YM_DSP_boucle_principale_decompression_d_un_bloc_bouclage
+	nop
+; on est sur le dernier bloc
+	movei	#YM_ecart_entre_frames_dernier_bloc,R24
+	load	(R24),R2
+	jr		YM_DSP_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc
+	nop
+
+YM_DSP_boucle_principale_decompression_d_un_bloc_bouclage:
+	movei	#YM_LZ4_pointeur_datas_compressees_premier_bloc,R24
+	moveq	#1,R1					; revient au bloc 1
+	load	(R24),R10				; pointeur sur les datas compresses du bloc 1
+
+YM_DSP_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
+	movei	#YM_LZ4_nb_frames_bloc_LZ4_suivant,R25
+	store	R1,(R21)
+	store	R2,(R25)
+	
+; decompression LZ4 DSP
+; 
+; input: R20 : packed buffer
+;		 R21 : output buffer
+;		 R0  : LZ4 packed block size (in bytes)	
+
+
+; input: R20 : packed buffer
+	move	R10,R20
+
+;		 R21 : output buffer
+	movei	#YM_LZ4_pointeur_bloc_LZ4_suivant,R21
+	load	(R21),R21
+
+	movei	#YM_LZ4_pointeur_tailles_des_blocs,R0
+	load	(R0),R0
+	subq	#1,R1		; R1=numero du bloc
+	add		R1,R1
+	add		R1,R0
+	loadb	(R0),R2
+	addq	#1,R0
+	loadb	(R0),R0
+	shlq	#8,R2
+	add		R2,R0		; R0=taille du bloc LZ4
+	move	R20,R22
+	movei	#YM_LZ4_pointeur_actuel_datas_compressees,R10
+	add		R0,R22		; pointeur actuel sur source LZ4 + taille du bloc LZ4 = position du nouveau bloc LZ4
+	store	R22,(R10)
+
+; debug
+	;movei	#EDZTMP1,R13
+	;store	R20,(R13)
+	;movei	#EDZTMP2,R13
+	;store	R21,(R13)
+	;movei	#EDZTMP3,R13
+	;store	R0,(R13)
+
+
+; input: R20 : packed buffer
+;		 R21 : output buffer
+;		 R0  : LZ4 packed block size (in bytes)
+
+; A4 => R24
+; A0 => R20
+; A1 => R21
+; A3 => R23
+; D0 => R0
+; D1 => R1
+; D2 => R2
+; D4 => R4
+
+; adresse saut 1 => R10
+; adresse saut 2 => R11
+
+; R12=$FF pour mask
+; R13=tmp
+
+
+
+lz4_depack_smallest_DSP:
+			move	R20,R24
+			add		R0,R24	; packed buffer end
+			moveq	#0,R0
+			moveq	#0,R2
+			moveq	#$F,R4
+			movei	#$FF,R12
+
+.tokenLoop_smallest_DSP:
+			loadb	(R20),R0
+			addq	#1,R20
+			move	R0,R1
+			shrq	#4,R1
+			movei	#.lenOffset_smallest_DSP,R10
+			cmpq	#0,R1
+			jump	eq,(R10)
+			nop
+			
+.readLen_smallest1_DSP:	
+			movei	#.readEnd_smallest1_DSP,R11
+			cmp		R1,R4					; cmp.B !!!!
+			jump	ne,(R11)
+			nop
+
+.readLoop_smallest1_DSP:
+			loadb	(R20),R2
+			addq	#1,R20
+			add		R2,R1				; final len could be > 64KiB
+			
+			not		R2
+			and		R12,R2				; not R2.b
+			movei	#.readLoop_smallest1_DSP,R10
+			cmpq	#0,R2
+			jump	eq,(R10)
+			nop
+	
+.readEnd_smallest1_DSP:	
+
+.litcopy_smallest_DSP:
+			loadb	(R20),R13
+			storeb	R13,(R21)
+			addq	#1,R20
+			addq	#1,R21
+			movei	#.litcopy_smallest_DSP,R10
+			subq	#1,R1
+			cmpq	#0,R1
+			jump	ne,(R10)
+			nop
+
+			; end test is always done just after literals
+			movei	#.readEnd_smallest_DSP,R11
+			cmp		R20,R24
+			jump	eq,(R11)
+			nop
+			
+.lenOffset_smallest_DSP:
+			loadb	(R20),R1	; read 16bits offset, little endian, unaligned
+			addq	#1,R20
+			loadb	(R20),R13
+			addq	#1,R20
+			shlq	#8,R13
+			add		R13,R1
+			
+			move	R21,R23
+			sub		R1,R23		; R1/d1 bits 31..16 are always 0 here
+
+			moveq	#$F,R1
+			and		R0,R1		; and.w	d0,d1 .W !!!
+
+.readLen_smallest2_DSP:	
+			movei	#.readEnd_smallest2_DSP,R11
+			cmp		R1,R4					; cmp.B !!!!
+			jump	ne,(R11)
+			nop
+
+.readLoop_smallest2_DSP:	
+			loadb	(R20),R2
+			addq	#1,R20
+			add		R2,R1				; final len could be > 64KiB
+			
+			not		R2
+			and		R12,R2				; not R2.b
+			movei	#.readLoop_smallest2_DSP,R10
+			cmpq	#0,R2
+			jump	eq,(R10)
+			nop
+		
+.readEnd_smallest2_DSP:
+			addq	#4,R1
+
+.copy_smallest_DSP:
+			loadb	(R23),R13
+			storeb	R13,(R21)
+			addq	#1,R23
+			addq	#1,R21
+			movei	#.copy_smallest_DSP,R10
+			movei	#.tokenLoop_smallest_DSP,R11
+			subq	#1,R1
+			jump	ne,(R10)
+			nop
+			jump	(R11)
+			nop
+
+.readLen_smallest_DSP:	
+			movei	#.readEnd_smallest_DSP,R11
+			cmp		R1,R4					; cmp.B !!!!
+			jump	ne,(R11)
+			nop
+
+.readLoop_smallest_DSP:	
+			loadb	(R20),R2
+			addq	#1,R20
+			add		R2,R1				; final len could be > 64KiB
+			
+			not		R2
+			and		R12,R2				; not R2.b
+			movei	#.readLoop_smallest_DSP,R10
+			cmpq	#0,R2
+			jump	eq,(R10)
+			nop
+	
+.readEnd_smallest_DSP:	
+
+YM_DSP_retour_depack_LZ4_boucle_principale_DSP:
+	movei	#YM_LZ4_nb_bloc_LZ4_disponibles,R0
+	load	(R0),R1
+	addq	#1,R1
+	store	R1,(R0)
+	
+	movei	#DSP_boucle_centrale,R0
+	jump	(R0)
+	nop
+
+
+	
+	.endif
+
+
+
+	
 
 
 	.phrase
-	
+
+EDZTMP1:		dc.l				0
+EDZTMP2:		dc.l				0
+EDZTMP3:		dc.l				0
+
 ; datas DSP
 YM_DSP_pointeur_sur_table_des_pointeurs_env_Buzzer:		dc.l		0
 
@@ -2706,7 +3174,6 @@ YM_flag_effets_Buzzer:		dc.l		0
 PSG_compteur_frames_restantes:			dc.l		0
 YM_pointeur_actuel_ymdata:				dc.l		0
 YM_nombre_de_blocs_lZ4:					dc.l		0
-YM_numero_bloc_en_cours:				dc.l		0
 
 ; - le registre 13 definit la forme de l'enveloppe
 ; - on initialise une valeur à -16
@@ -2813,6 +3280,8 @@ SOUND_DRIVER_SIZE			.equ			YM_DSP_fin-DSP_base_memoire
 
 
 fichier_ym7:
+	.incbin				"YM/Cube_Crystallized.ym7"				; 50 Hz, env voie B des le debut, digidrums voie B / pas de Sid, pas de D, pas de buzzer
+
 	;.incbin				"YM/Gwem_Gwem_Camp.ym7"					; 57 HZ/SID/D
 	;.incbin			"YM/Mad_Max_Ajh_99.ym7"					; SID
 	;.incbin			"YM/505_Pulse.ym7"						; SID/
@@ -2827,7 +3296,7 @@ fichier_ym7:
 	
 	;.incbin		"YM/Mad_Max_Buzzer.ym7"					; YM7 buzzer + SID
 	;.incbin			"YM/Tomchi_Sidified.ym7"					; SID a partir de la 2eme frame. (+1)
-	.incbin		"YM/DMA_Sc_Fantasia_main.ym7"					; YM7 SID
+	;.incbin		"YM/DMA_Sc_Fantasia_main.ym7"					; YM7 SID
 	;.incbin			"YM/Furax_Virtualescape_main.ym7"				; YM7 SID
 	;.incbin		"YM/MadMax_Virtual_Esc_End.ym7"			; YM7 SID voie A
 	;.incbin			"YM/LotekStyle_Alpha_Proxima.ym7"		; SID voie C au debut
@@ -2849,14 +3318,17 @@ debut_ram_libre:			dc.l			FIN_RAM
 DEBUT_BSS:
 ;EDZ_compteur_reset_offset_entier_voie_A:			ds.l	1
 
+frequence_Video_Clock:					ds.l				1
 
 YM_nombre_de_frames_totales:			ds.l				1
 YM_frequence_replay:					ds.l				1
-YM_flag_effets_sur_les_voies:			ds.w				1
-YM_ecart_entre_frames_blocs:			ds.w				1
+YM_ecart_entre_frames_blocs:			ds.l				1
 YM_ecart_entre_frames_dernier_bloc:		ds.l				1
-YM_nb_registres_par_frame:				ds.w				1
 
+YM_LZ4_numero_dernier_bloc_decompresse:			ds.l		1
+
+YM_nb_registres_par_frame:				ds.w				1
+YM_flag_effets_sur_les_voies:			ds.w				1
 	.phrase
 
 YM_pointeur_origine_ymdata:		ds.l		1
@@ -2869,17 +3341,23 @@ PSG_ecart_entre_les_registres_ymdata:		ds.l			1
 
 YM_LZ4_pointeur_tailles_des_blocs:		ds.l		1
 YM_LZ4_pointeur_destination_bloc_actuel:		ds.l		1
+YM_LZ4_pointeur_actuel_datas_compressees:		ds.l		1
+YM_LZ4_pointeur_datas_compressees_premier_bloc:	ds.l		1
+YM_LZ4_pointeur_bloc_LZ4_en_cours:				ds.l		1
+YM_LZ4_pointeur_bloc_LZ4_suivant:				ds.l		1
+YM_LZ4_nb_frames_bloc_LZ4_suivant:				ds.l		1
+YM_LZ4_nb_bloc_LZ4_disponibles:					ds.l		1
 
-YM_tableau_des_blocs_decompresses:
+;YM_tableau_des_blocs_compresses:
 ; pointeur adresse bloc mémoire decompressé, écart entre les registres pour ce bloc
-	.rept 32
-		ds.l		1
-		ds.l		1
-	.endr
+;	.rept 32
+;		ds.l		1
+;		ds.l		1
+;	.endr
 
-EDZTMP1:							ds.l			1
-pointeur_buffer_de_debug:		ds.l			1
-buffer_de_debug:				ds.l			480
+;EDZTMP1:							ds.l			1
+;pointeur_buffer_de_debug:		ds.l			1
+;buffer_de_debug:				ds.l			480
 	
 
 FIN_RAM:
