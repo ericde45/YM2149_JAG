@@ -1,4 +1,3 @@
-
 ; YM7 sur Jaguar
 ;
 ; TODO :
@@ -14,21 +13,21 @@
 ;	OK - init Buzzer
 ;	OK - gérer Buzzer
 
-;	- init Sinus Sid
-;	- gérer Sinus Sid = 1 voie séparée
+;	OK - init Sinus Sid
+;	OK - gérer Sinus Sid = 1 voie séparée
 
 ;	OK - replay à fréquence variable
-;	- autoriser I2S pendant le timer 1
+;	OK - autoriser I2S pendant le timer 1
 
 ;	OK - décompresser LZ4 au fur et à mesure. en utilisant le 68000.
 ;	OK - décompresser LZ4 au fur et à mesure. en utilisant le DSP.
 
 ;	- simplifier la lecture des effets : BTST sur 1 seul registre
-;	- with values decreasing from 8000 to zero. This will avoid a loud click on start up
-;	- dans routine I2S : utiliser 3 registres pour les 3 volumes + registre sur table des volumes
-;	- forcer pointeur sur volume pour digidrums dans Timer 1
-;	- stéréo !!!! : placer 1 voie 100% a gauche, 1 voie 100% a droite, et 1 voie 60% a gauche/40% a droite : utiliser des % pour droite et gauche pour chaque canal A B C D, et multiplier
-;	- placer la copie des 2 samples en tout debut de routine interruption I2S ( vue la variabilité liée à la génération du Noise )
+;	OK - with values decreasing from 8000 to zero. This will avoid a loud click on start up
+;	OK - forcer pointeur sur volume pour digidrums dans Timer 1
+;	OK - stéréo !!!! : placer 1 voie 100% a gauche, 1 voie 100% a droite, et 1 voie 60% a gauche/40% a droite : utiliser des % pour droite et gauche pour chaque canal A B C D, et multiplier
+;	BOF ?- placer la copie des 2 samples en tout debut de routine interruption I2S ( vue la variabilité liée à la génération du Noise )
+;	- utiliser l'assembleur pour Object Processor
 
 ; timer I2S = generation des samples
 ; Timer 1 = routine de replay
@@ -45,6 +44,20 @@
 
 	include	"jaguar.inc"
 
+; STEREO
+STEREO									.equ			1			; 0=mono / 1=stereo
+STEREO_shit_bits						.equ			4
+; stereo weights : 0 to 16
+YM_DSP_Voie_A_pourcentage_Gauche		.equ			14
+YM_DSP_Voie_A_pourcentage_Droite		.equ			2
+YM_DSP_Voie_B_pourcentage_Gauche		.equ			10
+YM_DSP_Voie_B_pourcentage_Droite		.equ			6
+YM_DSP_Voie_C_pourcentage_Gauche		.equ			6
+YM_DSP_Voie_C_pourcentage_Droite		.equ			10
+YM_DSP_Voie_D_pourcentage_Gauche		.equ			2
+YM_DSP_Voie_D_pourcentage_Droite		.equ			14
+
+
 ; algo de la routine qui genere les samples
 ; 3 canaux : increment onde carrée * 3 , increment noise, volume voie * 3 , increment enveloppe
 
@@ -55,11 +68,13 @@ DSP_DEBUG_BUZZER	.equ			0									; 0=Buzzer ON / 1=pas de gestion du buzzer
 YM_avancer			.equ			1									; 0=on avance pas / 1=on avance
 YM_position_debut_dans_musique		.equ		0
 YM_Samples_SID_en_RAM_DSP			.equ		1						; 0 = samples SID en RAM 68000 / 1 = samples SID en RAM DSP.
+YM_Samples_Sinus_SID_en_RAM_DSP		.equ		1						; 0 = samples Sinus SID en RAM 68000 / 1 = samples Sinus SID en RAM DSP.
 YM_LZ4_depack_au_DSP				.equ		1						; 1=depack LZ4 au DSP pendant le replay / 0=68000
 DSP_random_Noise_generator_method	.equ		4						; algo to generate noise random number : 1 & 4 (LFSR) OK uniquement // 2 & 3 : KO
+VBLCOUNTER_ON_DSP_TIMER1			.equ		0						; 0=vbl counter in VI interrupt CPU / 1=vbl counter in Timer 1
 
 	
-DSP_Audio_frequence					.equ			25000				; 22300=>17 => 23082 / 
+DSP_Audio_frequence					.equ			65000				; 22300=>17 => 23082 / 
 YM_frequence_YM2149					.equ			2000000				; 2 000 000 = Atari ST , 1 000 000 Hz = Amstrad CPC, 1 773 400 Hz = ZX spectrum 
 YM_DSP_frequence_MFP				.equ			2457600
 YM_DSP_precision_virgule_digidrums	.equ			11
@@ -88,6 +103,14 @@ YM_DSP_precision_virgule_envbuzzer	.equ			16
 ; 26.593900 / prediviser +1 / seconde diviseur +1 .
 ; pour 50 hz : 26593900 hz => 531 878 => 2 × 73 × 3643 => prediviseur = 146 / 3643
 
+; ----------------------------
+; parametres affichage
+ob_liste_originale			equ		(ENDRAM-$4000)							; address of list (shadow)
+ob_list_courante			equ		(ob_liste_originale+$2000)				; address of read list
+nb_octets_par_ligne			equ		320
+nb_lignes					equ		256
+
+
 DSP_STACK_SIZE	equ	32	; long words
 DSP_USP			equ		(D_ENDRAM-(4*DSP_STACK_SIZE))
 DSP_ISP			equ		(DSP_USP-(4*DSP_STACK_SIZE))
@@ -108,6 +131,22 @@ boucle_clean_BSS:
 	move.b		d0,(a0)+
 	cmp.l		a0,a1
 	bne.s		boucle_clean_BSS
+	.endif
+
+	move.w		#$000,JOYSTICK
+
+	.if			0=1
+; évite le click du début:
+; pas évident
+	move.l		#$8000,d0
+.slowsoundon:
+	move.l		d0,L_I2S
+	move.l		d0,L_I2S+4
+	move.l		#20,d1
+.ok:
+	nop
+	dbf			d1,.ok
+	dbf			d0,.slowsoundon
 	.endif
 
 ;check ntsc ou pal:
@@ -131,8 +170,46 @@ jesuisenpal:
 	;move.l		a0,pointeur_buffer_de_debug
 
 	move.l		#INITSTACK, sp	
-	move.w		#$06C7, VMODE			; 320x256
+	move.w		#%0000011011000111, VMODE			; 320x256
 	move.w		#$100,JOYSTICK
+    bsr     InitVideo               	; Setup our video registers.
+
+
+	bsr		creer_Object_list
+	jsr     copy_olist              	; use Blitter to update active list from shadow
+
+	move.l	#ob_list_courante,d0					; set the object list pointer
+	swap	d0
+	move.l	d0,OLP
+
+	lea		CLUT,a2
+	move.l	#255-2,d7
+	moveq	#0,d0
+	
+copie_couleurs:
+	move.w	d0,(a2)+
+	addq.l	#5,d0
+	dbf		d7,copie_couleurs
+
+	lea		CLUT+2,a2
+	move.w	#$F00F,(a2)+
+	
+
+	move.l	#ob_list_courante,d0					; set the object list pointer
+	swap	d0
+	move.l	d0,OLP
+
+	move.l  #VBL,LEVEL0     	; Install 68K LEVEL0 handler
+	move.w  a_vde,d0                	; Must be ODD
+	sub.w   #16,d0
+	ori.w   #1,d0
+	move.w  d0,VI
+
+	move.w  #%01,INT1                 	; Enable video interrupts 11101
+
+
+	and.w   #%1111100011111111,sr				; 1111100011111111 => bits 8/9/10 = 0
+	and.w   #$f8ff,sr
 
 
 ; ------------------------
@@ -153,11 +230,13 @@ boucle_copie_bloc_DSP:
 	move.l	(A0)+,(A1)+
 	dbf		D0,boucle_copie_bloc_DSP
 
+; CLS
+	moveq	#0,d0
+	bsr		print_caractere
 	
-                               
+; $40e0                               
 ; apres copie on init le YM7
 	bsr			YM_init_ym7
-
 
 
 ; init DSP
@@ -180,50 +259,101 @@ boucle_copie_bloc_DSP:
 	and.l	#$ffff,d0
  	move.l	d0,DSP_frequence_de_replay_reelle_I2S
 
-
+	bsr			YM_calcul_frequences_Sinus_Sid
 
 ; launch DSP
 
 	move.l	#REGPAGE,D_FLAGS
 	move.l	#DSP_routine_init_DSP,D_PC
 	move.l	#DSPGO,D_CTRL
+	move.l	#0,vbl_counter_replay_DSP
+	move.l	#0,vbl_counter
 
+; calcul RAM DSP
+	move.l		#D_ENDRAM,d0
+	sub.l		debut_ram_libre_DSP,d0
+	
+	move.l		a0,-(sp)
+	lea			chaine_RAM_DSP,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+	
+	bsr			print_nombre_4_chiffres
+; ligne suivante
+	moveq		#10,d0
+	bsr			print_caractere
 
+	move.b		#85,couleur_char
+
+; replay frequency
+	move.l		a0,-(sp)
+	lea			chaine_replay_frequency,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	move.l		DSP_frequence_de_replay_reelle_I2S,d0
+	bsr			print_nombre_5_chiffres
+
+	move.l		a0,-(sp)
+	lea			chaine_HZ_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	
+
+	move.b		#145,couleur_char
+	
+	move.l		a0,-(sp)
+	lea			chaine_playing_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	move.l		#STEREO,d1
+	cmp.l		#1,d1
+	beq.s		printstereo
+
+	lea			chaine_playing_YM7_MONO,a0
+	bsr			print_string
+
+	bra.s		okprintms
+printstereo:
+	lea			chaine_playing_YM7_STEREO,a0
+	bsr			print_string
+okprintms:
+
+	move.b		#245,couleur_char
+
+	
 toto:
 
 	;move.l		PSG_compteur_frames_restantes,d0
 	;move.l		PSG_ecart_entre_les_registres_ymdata,d1
 	;move.l		YM_pointeur_actuel_ymdata,A0
 	
-	move.l		EDZTMP1,d1
-	move.l		EDZTMP2,d2
-	move.l		EDZTMP3,d3
 
 ;$40D0
 	;lea			buffer_de_debug,a0
 	;move.l		pointeur_buffer_de_debug,a1
 
 
-	;move.l		YM_DSP_pointeur_sample_SID_voie_B,d0
-	;cmp.l		#0,d0
-	;beq.s		ok_toto
+	move.l		YM_DSP_increment_sample_Sinus_SID,d0
+	cmp.l		#0,d0
+	beq.s		ok_toto
 	
 ; $40B8
-	;move.l		EDZTMP1,d1
-	;move.l		YM_frequence_replay,d2
 	
-	;move.l		YM_DSP_increment_sample_SID_voie_B,d1 
-	;move.l		YM_DSP_offset_sample_SID_voie_B,d2
-	;move.l		YM_DSP_taille_sample_SID_voie_B,d3
-	;move.l		YM_DSP_registre9,d4
-	;move.l		YM_DSP_pointeur_sur_table_infos_samples_SID,d5
-	;move.l		YM_DSP_volB,d6
-	;move.l		YM_DSP_pointeur_sur_source_du_volume_B,d7
+	move.l		YM_DSP_pointeur_sample_Sinus_SID,d1 
+	move.l		YM_DSP_offset_sample_SID_voie_A,d2
+	move.l		YM_DSP_offset_sample_Sinus_SID,d3
+	move.l		YM_DSP_taille_sample_Sinus_SID,d4
+	move.l		YM_DSP_pointeur_sur_table_infos_samples_SID,d5
+	move.l		YM_DSP_volA,d6
+	move.l		YM_DSP_pointeur_sur_source_du_volume_A,d7
 ; $4102
-	;nop
+	nop
 	
 	
-;ok_toto:
+ok_toto:
 	.if			YM_LZ4_depack_au_DSP=0
 	move.l		YM_LZ4_nb_bloc_LZ4_disponibles,d0
 	cmp.l		#2,d0
@@ -251,7 +381,7 @@ YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
 	
 	move.l		d1,YM_LZ4_numero_dernier_bloc_decompresse
 	move.l		d2,YM_LZ4_nb_frames_bloc_LZ4_suivant
-
+	
 	move.l		YM_LZ4_pointeur_bloc_LZ4_suivant,a1
 
 ; taille du bloc compressé: => d0
@@ -269,17 +399,982 @@ YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
 	
 	addq.l		#1,YM_LZ4_nb_bloc_LZ4_disponibles
 	.endif
+
+; gestion affichage ligne indicateurs
+;envA
+	move.b		#" ",d0
+	move.l		#YM_DSP_volE,d1
+	cmp.l		YM_DSP_pointeur_sur_source_du_volume_A,d1
+	bne.s		.envA
+	move.b		#"E",d0
+.envA:
+	move.b		d0,chaine_replay_envA
+;envB
+	move.b		#" ",d0
+	move.l		#YM_DSP_volE,d1
+	cmp.l		YM_DSP_pointeur_sur_source_du_volume_B,d1
+	bne.s		.envB
+	move.b		#"E",d0
+.envB:
+	move.b		d0,chaine_replay_envB
+;envC
+	move.b		#" ",d0
+	move.l		#YM_DSP_volE,d1
+	cmp.l		YM_DSP_pointeur_sur_source_du_volume_C,d1
+	bne.s		.envC
+	move.b		#"E",d0
+.envC:
+	move.b		d0,chaine_replay_envC
+;TA
+	move.b		#"T",d0
+	cmp.l		#0,	YM_DSP_Mixer_TA
+	beq.s		.TA
+	move.b		#" ",d0
+.TA:
+	move.b		d0,chaine_replay_TA
+;NA
+	move.b		#"N",d0
+	cmp.l		#0,	YM_DSP_Mixer_NA
+	beq.s		.NA
+	move.b		#" ",d0
+.NA:
+	move.b		d0,chaine_replay_NA
+; SID A
+	move.b		#" ",d0
+	cmp.l		#0,	YM_DSP_pointeur_sample_SID_voie_A
+	beq.s		.sidA
+	move.b		#"S",d0
+.sidA:
+	move.b		d0,chaine_replay_SID_A
+; DG A
+	move.b		#" ",d0
+	cmp.l		#0,	YM_DSP_pointeur_sample_digidrum_voie_A
+	beq.s		.DGA
+	move.b		#"D",d0
+.DGA:
+	move.b		d0,chaine_replay_DG_A
+
+;TB
+	move.b		#"T",d0
+	cmp.l		#0,	YM_DSP_Mixer_TB
+	beq.s		.TB
+	move.b		#" ",d0
+.TB:
+	move.b		d0,chaine_replay_TB
+;NB
+	move.b		#"N",d0
+	cmp.l		#0,	YM_DSP_Mixer_NB
+	beq.s		.NB
+	move.b		#" ",d0
+.NB:
+	move.b		d0,chaine_replay_NB
+; SID B
+	move.b		#" ",d0
+	cmp.l		#0,	YM_DSP_pointeur_sample_SID_voie_B
+	beq.s		.sidB
+	move.b		#"S",d0
+.sidB:
+	move.b		d0,chaine_replay_SID_B
+; DG B
+	move.b		#" ",d0
+	cmp.l		#0,	YM_DSP_pointeur_sample_digidrum_voie_B
+	beq.s		.DGB
+	move.b		#"D",d0
+.DGB:
+	move.b		d0,chaine_replay_DG_B
+
+;TC
+	move.b		#"T",d0
+	cmp.l		#0,	YM_DSP_Mixer_TC
+	beq.s		.TC
+	move.b		#" ",d0
+.TC:
+	move.b		d0,chaine_replay_TC
+;NC
+	move.b		#"N",d0
+	cmp.l		#0,	YM_DSP_Mixer_NC
+	beq.s		.NC
+	move.b		#" ",d0
+.NC:
+	move.b		d0,chaine_replay_NC
+; SID C
+	move.b		#" ",d0
+	cmp.l		#0,	YM_DSP_pointeur_sample_SID_voie_C
+	beq.s		.sidC
+	move.b		#"S",d0
+.sidC:
+	move.b		d0,chaine_replay_SID_C
+; DG C
+	move.b		#" ",d0
+	cmp.l		#0,	YM_DSP_pointeur_sample_digidrum_voie_C
+	beq.s		.DGC
+	move.b		#"D",d0
+.DGC:
+	move.b		d0,chaine_replay_DG_C
+
+; Buzzer
+	move.b		#" ",d0
+	cmp.l		#0,	YM_DSP_increment_envbuzzer_en_cours
+	beq.s		.buzzer
+	move.b		#"Z",d0
+.buzzer:
+	move.b		d0,chaine_replay_Buzzer
+
+; Sinus Sid
+	move.b		#" ",d0
+	cmp.l		#0,	YM_DSP_increment_sample_Sinus_SID
+	beq.s		.sinus
+	move.b		#"s",d0
+.sinus:
+	move.b		d0,chaine_replay_Sinus
+
+
+
+	move.l		a0,-(sp)
+	lea			chaine_replay_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+
+
+; compteur de temps
+
+	.if			VBLCOUNTER_ON_DSP_TIMER1=1
+	move.l		vbl_counter_replay_DSP,d0
+	.endif
+	.if			VBLCOUNTER_ON_DSP_TIMER1=0
+	move.l		vbl_counter,d0
+	.endif
+	move.l		d0,d1
+	move.l		_50ou60hertz,d2
+	divu		d2,d1
+	and.l		#$FFFF,d1			; d1=secondes
+
+	move.l		d1,d0
+	divu		#60,d0
+	and.l		#$FFFF,d0
+	move.l		d0,d2
+	bsr			print_nombre_2_chiffres
+
+; ":"
+	moveq	#0,d0
+	move.b	#":",d0
+	bsr		print_caractere
+
+	mulu		#60,d2
+	sub.l		d2,d1
+	move.l		d1,d0
+	bsr			print_nombre_2_chiffres_force
+
+	moveq	#0,d0
+	move.b	#" ",d0
+	bsr		print_caractere
+
+; unpacking LZ4 en cours ?
+	moveq		#0,d0
+	move.b		#" ",d0
+	move.b		couleur_char,d7
+	move.l		YM_LZ4_nb_bloc_LZ4_disponibles,d1
+	cmp.l		#2,d1
+	bge			.pasdedepackencours
+	move.b		#1,couleur_char
+	moveq	#0,d0
+	move.b	#"u",d0
+.pasdedepackencours:
+	bsr		print_caractere
+	move.b		d7,couleur_char
 	
+; retour a la ligne	
+	moveq	#9,d0
+	bsr		print_caractere
+
+
 	
 	bra			toto
 
 	stop		#$2700
 
+;--------------------------
+; VBL
+
+VBL:
+                movem.l d0-d7/a0-a6,-(a7)
+				
+				;add.w		#1,BG					; debug pour voir si vivant
+
+                jsr     copy_olist              	; use Blitter to update active list from shadow
+
+                addq.l	#1,vbl_counter
+
+                ;move.w  #$101,INT1              	; Signal we're done
+				move.w	#$101,INT1
+                move.w  #$0,INT2
+.exit:
+                movem.l (a7)+,d0-d7/a0-a6
+                rte
+
+; ---------------------------------------
+; imprime une chaine terminée par un zéro
+; a0=pointeur sur chaine
+print_string:
+	movem.l d0-d7/a0-a6,-(a7)	
+
+print_string_boucle:
+	moveq	#0,d0
+	move.b	(a0)+,d0
+	cmp.w	#0,d0
+	bne.s	print_string_pas_fin_de_chaine
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+print_string_pas_fin_de_chaine:
+	bsr		print_caractere
+	bra.s	print_string_boucle
+
+; ---------------------------------------
+; imprime un nombre HEXA de 2 chiffres
+print_nombre_hexa_2_chiffres:
+	movem.l d0-d7/a0-a6,-(a7)
+	lea		convert_hexa,a0
+	move.l		d0,d1
+	divu		#16,d0
+	and.l		#$F,d0			; limite a 0-15
+	move.l		d0,d2
+	mulu		#16,d2
+	sub.l		d2,d1
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+	move.l		d1,d0
+	and.l		#$F,d0			; limite a 0-15
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+	
+convert_hexa:
+	dc.b		48,49,50,51,52,53,54,55,56,57
+	dc.b		65,66,67,68,69,70
+	
+; ---------------------------------------
+; imprime un nombre de 2 chiffres
+print_nombre_2_chiffres:
+	movem.l d0-d7/a0-a6,-(a7)
+	move.l		d0,d1
+	divu		#10,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#10,d2
+	sub.l		d2,d1
+	cmp.l		#0,d0
+	beq.s		.zap
+	add.l		#48,d0
+	bsr			print_caractere
+.zap:
+	move.l		d1,d0
+	add.l		#48,d0
+	bsr			print_caractere
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+
+; ---------------------------------------
+; imprime un nombre de 3 chiffres
+print_nombre_3_chiffres:
+	movem.l d0-d7/a0-a6,-(a7)
+	move.l		d0,d1
+
+	divu		#100,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#100,d2
+	sub.l		d2,d1
+	cmp.l		#0,d0
+	beq.s		.zap
+	add.l		#48,d0
+	bsr			print_caractere
+.zap:
+	move.l		d1,d0	
+	divu		#10,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#10,d2
+	sub.l		d2,d1
+	add.l		#48,d0
+	bsr			print_caractere
+	
+	move.l		d1,d0
+	add.l		#48,d0
+	bsr			print_caractere
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+
+
+; ---------------------------------------
+; imprime un nombre de 2 chiffres , 00
+print_nombre_2_chiffres_force:
+	movem.l d0-d7/a0-a6,-(a7)
+	move.l		d0,d1
+	divu		#10,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#10,d2
+	sub.l		d2,d1
+	add.l		#48,d0
+	bsr			print_caractere
+	move.l		d1,d0
+	add.l		#48,d0
+	bsr			print_caractere
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+
+; ---------------------------------------
+; imprime un nombre de 4 chiffres HEXA
+print_nombre_hexa_4_chiffres:
+	movem.l d0-d7/a0-a6,-(a7)
+	move.l		d0,d1
+	lea		convert_hexa,a0
+
+	divu		#4096,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#4096,d2
+	sub.l		d2,d1
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+
+	move.l		d1,d0
+	divu		#256,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#256,d2
+	sub.l		d2,d1
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+
+
+	move.l		d1,d0
+	divu		#16,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#16,d2
+	sub.l		d2,d1
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+	move.l		d1,d0
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+
+; ---------------------------------------
+; imprime un nombre de 6 chiffres HEXA ( pour les adresses memoire)
+print_nombre_hexa_6_chiffres:
+	movem.l d0-d7/a0-a6,-(a7)
+	
+	move.l		d0,d1
+	lea		convert_hexa,a0
+
+	swap		d0
+	and.l		#$F0,d0
+	lsr.l		#4,d0
+	and.l		#$F,d0
+	and.l		#$FFFFF,d1
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+
+	move.l		d1,d0
+	swap		d0
+	and.l		#$F,d0
+	and.l		#$FFFF,d1
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+
+
+	move.l		d1,d0
+	divu		#4096,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#4096,d2
+	sub.l		d2,d1
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+
+	move.l		d1,d0
+	divu		#256,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#256,d2
+	sub.l		d2,d1
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+
+
+	move.l		d1,d0
+	divu		#16,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#16,d2
+	sub.l		d2,d1
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+	move.l		d1,d0
+	move.b		(a0,d0.w),d0
+	bsr			print_caractere
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+
+
+; ---------------------------------------
+; imprime un nombre de 4 chiffres
+print_nombre_4_chiffres:
+	movem.l d0-d7/a0-a6,-(a7)
+	move.l		d0,d1
+
+	divu		#1000,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#1000,d2
+	sub.l		d2,d1
+	add.l		#48,d0
+	bsr			print_caractere
+
+	move.l		d1,d0
+	divu		#100,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#100,d2
+	sub.l		d2,d1
+	add.l		#48,d0
+	bsr			print_caractere
+
+
+	move.l		d1,d0
+	divu		#10,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#10,d2
+	sub.l		d2,d1
+	add.l		#48,d0
+	bsr			print_caractere
+	move.l		d1,d0
+	add.l		#48,d0
+	bsr			print_caractere
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+
+; ---------------------------------------
+; imprime un nombre de 5 chiffres
+print_nombre_5_chiffres:
+	movem.l d0-d7/a0-a6,-(a7)
+	move.l		d0,d1
+
+	divu		#10000,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#10000,d2
+	sub.l		d2,d1
+	add.l		#48,d0
+	bsr			print_caractere
+
+	move.l		d1,d0
+	divu		#1000,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#1000,d2
+	sub.l		d2,d1
+	add.l		#48,d0
+	bsr			print_caractere
+
+	move.l		d1,d0
+	divu		#100,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#100,d2
+	sub.l		d2,d1
+	add.l		#48,d0
+	bsr			print_caractere
+
+
+	move.l		d1,d0
+	divu		#10,d0
+	and.l		#$FF,d0
+	move.l		d0,d2
+	mulu		#10,d2
+	sub.l		d2,d1
+	add.l		#48,d0
+	bsr			print_caractere
+	move.l		d1,d0
+	add.l		#48,d0
+	bsr			print_caractere
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+
+
+; -----------------------------
+; copie un caractere a l ecran
+; d0.w=caractere
+
+print_caractere:
+	movem.l d0-d7/a0-a6,-(a7)
+
+
+
+	cmp.b	#00,d0
+	bne.s	print_caractere_pas_CLS
+	move.l	#ecran1,A1_BASE			; = DEST
+	move.l	#$0,A1_PIXEL
+	move.l	#PIXEL16|XADDPHR|PITCH1,A1_FLAGS
+	move.l	#ecran1+320*100,A2_BASE			; = source
+	move.l	#$0,A2_PIXEL
+	move.l	#PIXEL16|XADDPHR|PITCH1,A2_FLAGS
+	
+	move.w	#$00,B_PATD
+	
+
+	moveq	#0,d0
+	move.w	#nb_octets_par_ligne,d0
+	lsr.w	#1,d0
+	move.w	#nb_lignes,d1
+	mulu	d1,d0
+	swap	d0
+	move.w	#1,d0
+	swap	d0
+	;move.w	#65535,d0
+	move.l	d0,B_COUNT
+	move.l	#LFU_REPLACE|SRCEN|PATDSEL,B_CMD
+
+
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+	
+print_caractere_pas_CLS:
+
+	cmp.b	#10,d0
+	bne.s	print_caractere_pas_retourchariot
+	move.w	#0,curseur_x
+	add.w	#8,curseur_y
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+
+print_caractere_pas_retourchariot:
+	cmp.b	#09,d0
+	bne.s	print_caractere_pas_retourdebutligne
+	move.w	#0,curseur_x
+	movem.l (a7)+,d0-d7/a0-a6
+	rts
+
+print_caractere_pas_retourdebutligne:
+
+	lea		ecran1,a1
+	moveq	#0,d1
+	move.w	curseur_x,d1
+	add.l	d1,a1
+	moveq	#0,d1
+	move.w	curseur_y,d1
+	mulu	#nb_octets_par_ligne,d1
+	add.l	d1,a1
+
+	lsl.l	#3,d0		; * 8
+	lea		fonte,a0
+	add.l	d0,a0
+	
+	
+; copie 1 lettre
+	move.l	#8-1,d0
+copieC_ligne:
+	moveq	#8-1,d1
+	move.b	(a0)+,d2
+copieC_colonne:
+	moveq	#0,d4
+	btst	d1,d2
+	beq.s	pixel_a_zero
+	move.b	couleur_char,d4
+pixel_a_zero:
+	move.b	d4,(a1)+
+	dbf		d1,copieC_colonne
+	lea		nb_octets_par_ligne-8(a1),a1
+	dbf		d0,copieC_ligne
+
+	move.w	curseur_x,d0
+	add.w	#8,d0
+	cmp.w	#320,d0
+	blt		curseur_pas_fin_de_ligne
+	moveq	#0,d0
+	add.w	#8,curseur_y
+curseur_pas_fin_de_ligne:
+	move.w	d0,curseur_x
+
+	movem.l (a7)+,d0-d7/a0-a6
+
+	rts
+
+
+;----------------------------------
+; recopie l'object list dans la courante
+
+copy_olist:
+				move.l	#ob_list_courante,A1_BASE			; = DEST
+				move.l	#$0,A1_PIXEL
+				move.l	#PIXEL16|XADDPHR|PITCH1,A1_FLAGS
+				move.l	#ob_liste_originale,A2_BASE			; = source
+				move.l	#$0,A2_PIXEL
+				move.l	#PIXEL16|XADDPHR|PITCH1,A2_FLAGS
+				move.w	#1,d0
+				swap	d0
+				move.l	taille_liste_OP,d1
+				move.w	d1,d0
+				move.l	d0,B_COUNT
+				move.l	#LFU_REPLACE|SRCEN,B_CMD
+				rts
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; Simple Object List Routines for a simple life.
+;;
+;; call with *d0=object type
+;;           *d1=height
+;;           *d2=data width
+;;           *d3=colour depth
+;;           *d4=transparent
+;;           *d5=image width
+;;           *a0=address of object (phrase alligned)
+;;           *a1=address for GFX   (phrase alligned)
+;;
+;; exit with object built
+;;           link=object address+32
+;;           scaled objects will *NOT* be 1:1 in x/y
+;;           x/y positions will be -500,2 (off screen)
+;;
+bitmapobject    equ 0            ; object types
+scaledobject    equ 1
+gpuobject       equ 2
+braobject       equ 3             
+stopobject      equ 4
+
+y_less          equ 0            ; branch object types
+y_more          equ 1
+always          equ 2
+
+CreateObject:   lsl.w   #2,d0                   ; object type
+                move.l  jmp_tab(pc,d0),a6       ; get routine address
+                jmp (a6)                        ; call it!
+
+jmp_tab:        .dc.l bitmp                     ; jump table
+                .dc.l scaled
+                .dc.l gpuob
+                .dc.l braob
+                .dc.l stopob
+
+bitmp:          clr.l   (a0)                    ; template
+                clr.l   4(a0)                   ;
+                clr.l   8(a0)                   ;
+                move.l  #$00008000,12(a0)       ;
+
+                move.l  a0,d0                   ; link address
+	sub.l	#ob_liste_originale,d0
+	add.l	#ob_list_courante,d0
+
+                ;sub.l   #ob_list1,d0            ;
+                ;add.l   #ob_list,d0             ;
+                add.l   #32,d0                  ;
+                and.b   #%11111000,d0           ;
+                lsl.l   #5,d0                   ;
+                or.l    d0,2(a0)                ;
+
+                move.l  a1,d0                   ; gfx address
+                lsl.l   #8,d0                   ;
+				
+
+					
+                or.l    d0,(a0)                 ;
+				
+				
+				
+                move.l  d1,d0                   ; height
+                swap    d0                      ;
+                lsr.l   #2,d0                   ;
+                or.l    d0,4(a0)                ;
+				
+				
+                ror.w   #1,d4                   ; transparency
+                or.w    d4,10(a0)               ;
+                lsl.w   #8,d3                   ; depth (colour depth)
+                lsl.w   #4,d3                   ;
+                or.w    d3,14(a0)               ;
+                lsr.w   #3,d2                   ; data width
+                swap    d2                      ;
+                lsl.l   #2,d2                   ;
+                or.l    d2,12(a0)               ;
+                lsr.w   #3,d5                   ; image width
+                swap    d5                      ;
+                lsr.l   #4,d5                   ;
+                or.l    d5,10(a0)               ;
+
+				
+                move.w  #-500,d0                ; x-pos
+				
+				move.w #16,d0
+				
+                and.w   #$fff,d0
+                or.w    d0,14(a0)
+
+                or.w    #2*8,6(a0)              ; y-pos
+				
+;move.w	#-32,d0	; y_pos
+;and.w	#$ffff,d0
+;or.w	d0,6(a0)
+				
+				
+                lea     32(a0),a0               ; BITMAP object!
+                rts
+
+scaled:         bsr     bitmp                   ; same as bitmap
+                move.l  #$0,-16(a0)             ; clear it out
+                move.l  #%00000000000000000010000000100000,-12(a0)
+                or.l    #$1,-28(a0)             ; SCALED object!
+                rts
+
+gpuob:          move.l  #0,(a0)+
+                move.l  #$3ffa,(a0)+            ; GPU object!
+                rts
+
+				
+; D1=branch type
+; D2=Ypos
+; A1=address if branch TAKEN
+				
+braob:          add     d2,d2                   ; mult y-pos
+                bsr     branchobject            ; make the object
+make8into32:    move.l  #braobject,d0           ;
+                move.l  #always,d1              ; even it out for 32-byte
+                move.l  #$7ff,d2                ; positions by following with
+                lea     24(a0),a1               ; a BRA+16 object
+                bsr     branchobject            ;
+                lea     16(a0),a0               ;
+                rts
+
+branchobject:   clr.l   (a0)
+                move.l  #3,4(a0)
+                add.w   d1,d1
+                move.w  branchtypes(pc,d1.w),d1
+                or.w    d1,6(a0)                ; branch TYPE!
+                move.l  a1,d0
+	sub.l	#ob_liste_originale,d0
+	add.l	#ob_list_courante,d0
+                ;sub.l   #ob_list1,d0
+                ;add.l   #ob_list,d0
+                and.l   #$fffffff8,d0
+                lsl.l   #5,d0                   ; Link if branch **TAKEN!**
+                move.l  d0,2(a0)                ; (< & > swapped!)
+                lsl.w   #3,d2                   ; scanline to branch on
+                or.w    d2,6(a0)                ; is VC/2
+                lea     8(a0),a0                ; next object
+                rts
+
+branchtypes:    .dc.w    $4000,$8000,$0000       ; 
+
+stopob:         move.l  #0,(a0)+
+                move.l  #4,(a0)+                ; STOP object!
+                rts
+
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;
+;; Procedure: InitVideo (same as in vidinit.s)
+;;            Build values for hdb, hde, vdb, and vde and store them.
+;;
+
+InitVideo:
+                movem.l d0-d6,-(sp)
+
+				
+				move.w	#-1,ntsc_flag
+				move.l	#50,_50ou60hertz
+	
+				move.w  CONFIG,d0                ; Also is joystick register
+                andi.w  #VIDTYPE,d0              ; 0 = PAL, 1 = NTSC
+                beq     .palvals
+				move.w	#1,ntsc_flag
+				move.l	#60,_50ou60hertz
+	
+
+.ntscvals:		move.w  #NTSC_HMID,d2
+                move.w  #NTSC_WIDTH,d0
+
+                move.w  #NTSC_VMID,d6
+                move.w  #NTSC_HEIGHT,d4
+				
+                bra     calc_vals
+.palvals:
+				move.w #PAL_HMID,d2
+				move.w #PAL_WIDTH,d0
+
+				move.w #PAL_VMID,d6				
+				move.w #PAL_HEIGHT,d4
+
+				
+calc_vals:		
+                move.w  d0,width
+                move.w  d4,height
+                move.w  d0,d1
+                asr     #1,d1                   ; Width/2
+                sub.w   d1,d2                   ; Mid - Width/2
+                add.w   #4,d2                   ; (Mid - Width/2)+4
+                sub.w   #1,d1                   ; Width/2 - 1
+                ori.w   #$400,d1                ; (Width/2 - 1)|$400
+                move.w  d1,a_hde
+                move.w  d1,HDE
+                move.w  d2,a_hdb
+                move.w  d2,HDB1
+                move.w  d2,HDB2
+                move.w  d6,d5
+                sub.w   d4,d5
+                add.w   #16,d5
+                move.w  d5,a_vdb
+                add.w   d4,d6
+                move.w  d6,a_vde
+			
+			    move.w  a_vdb,VDB
+				move.w  a_vde,VDE    
+				
+				
+				move.l  #0,BORD1                ; Black border
+                move.w  #0,BG                   ; Init line buffer to black
+                movem.l (sp)+,d0-d6
+                rts
+
+
+
+
+; -------------------------------------------
+creer_Object_list:
+; il faut créer une liste avec :
+;	- un bra si y>0, sinon stop
+; 	- un bra si y< max Y, sinon stop
+; 	- un object bitmap
+;	- un stop
+
+; on stop tout
+	move.l	#stoplist,d0
+	swap.w	d0
+	move.l	d0,OLP
+
+; la creer dans ob_list_courante
+; puis la copier dans ob_liste_originale
+
+
+	lea		ob_liste_originale,a0
+
+; bra pour debut ecran, y< 0
+	
+	move.l  a0,d0               ; address if bra not taken
+	sub.l	#ob_liste_originale,d0
+	add.l	#ob_list_courante,d0
+    add.l   #32,d0              ; next BRA object
+	lsr.l   #3,d0
+	lsl.l   #8,d0
+	clr.l   (a0)
+	move.l  #$00008003,4(a0)    ; bra if yp<0
+	or.l    d0,2(a0)            ; link to next BRA
+	lea     8(a0),a0
+
+; stop OP
+	move.l  #0,(a0)+
+	move.l  #4,(a0)+            ; stop object processor !
+	lea     16(a0),a0			; aligner sur 32
+
+; bra pour fin ecran Y> X
+	move.l  a0,d0               ; address if bra not taken
+	sub.l	#ob_liste_originale,d0
+	add.l	#ob_list_courante,d0
+	add.l   #32,d0
+	lsr.l   #3,d0
+	lsl.l   #8,d0
+	clr.l   (a0)
+	move.l  #$00004003,4(a0)    ; bra is yp>value
+	or.l    d0,2(a0)            ; link to first object!
+
+; test NTSC ou PAL pour ligne de fin ( en demi lignes)
+	move.w	CONFIG,d6
+	andi.w	#VIDTYPE,d6
+	beq		.pal
+	move.l	#492,d0				; NTSC = 246 lignes
+	move.w	#1,ntsc_flag
+	bra.s	.ntsc
+
+.pal:
+	move.l	#560,d0
+	move.w	#-1,ntsc_flag
+
+.ntsc:
+	lsl.l   #3,d0
+	or.l    d0,4(a0)			; la valeur Y max
+
+	lea     8(a0),a0            ; next object
+; stop OP
+	move.l  #0,(a0)+
+	move.l  #4,(a0)+            ; stop object processor !
+	lea     16(a0),a0			; aligner sur 32
+
+
+
+	lea		ecran1,a1
+	move.l  #bitmapobject,d0        			; type
+	move.l  #256,d1								; 74,d1 ; height
+	move.l  #nb_octets_par_ligne,d2      						; bytes to next line
+	moveq	#3,d3				; 3=8bpp, 4=16bit
+	moveq	#0,d4                   			; Transparent
+	;move.l  #640,d5          					; bytes/pixels*width / line;
+	move.l	d2,d5
+	bsr     CreateObject
+
+	
+	moveq.l #stopobject,d0          			; STOP Object
+	bsr     CreateObject	
+	
+	
+
+	move.l	a0,d0
+	move.l	#ob_liste_originale,d1
+	sub.l	d1,d0				; d0=taille de l'object list
+	move.l	d0,taille_liste_OP
+
+	rts
 
 
 ;----------------------------------------------------
+YM_calcul_frequences_Sinus_Sid:
+
+	lea		YM_table_frequences_Sinus_Sid_Amiga,a0
+	lea		YM_DSP_table_frequences_Sinus_Sid_Jaguar,a1
+	moveq	#4-1,d7
+	move.l	DSP_frequence_de_replay_reelle_I2S,d1
+	move.l	#3546895,d2					; # frequence Amiga
+
+YM_calcul_frequences_Sinus_Sid_boucle:
+	moveq	#0,d0
+	move.w	(a0)+,d0
+	move.l	d2,d3
+	divu	d0,d3						; 3546895 / valeur du tableau
+	and.l	#$FFFF,d3					; ne garde que le resultat = 16 bits du bas
+	lsl.l	#8,d3						; 16+4 bits de precision
+	lsl.l	#6,d3						; 16+4 bits de precision
+	divu	d1,d3						; / frquence Jaguar
+	and.l	#$FFFF,d3					; ne garde que le resultat = 16 bits du bas
+	lsl.l	#2,d3
+	move.l	d3,(a1)+
+	dbf		d7,YM_calcul_frequences_Sinus_Sid_boucle
+	rts
+	
+	
+;----------------------------------------------------
 YM_init_ym7:
 ; tout le long de l'init D6=YM_nb_registres_par_frame
+
+	move.b		#225,couleur_char
+
+	lea			chaine_debut_init_YM7,a0
+	bsr			print_string
+
+	move.b		#5,couleur_char
 
 	lea			fichier_ym7,A0
 	
@@ -290,6 +1385,61 @@ YM_init_ym7:
 	moveq		#0,d0
 	move.w		(a0)+,d0
 	move.l		d0,YM_frequence_replay							; .w=frequence du replay ( 50 hz ?)
+
+
+
+	move.l		d0,-(sp)
+	bsr		print_nombre_3_chiffres
+	move.l		(sp)+,d0
+
+	move.l		a0,-(sp)
+	lea			chaine_HZ_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+; calcul et affichage de la durée de la chanson
+; YM_nombre_de_frames_totales / YM_frequence_replay
+	move.l		a0,-(sp)
+	lea			chaine_duree_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+
+	move.l		YM_nombre_de_frames_totales,d0
+	move.l		YM_frequence_replay,d6
+	divu		d6,d0
+	and.l		#$FFFF,d0					; d0=durée en secondes
+
+	move.l		d0,d6
+	divu		#60,d6						; en minutes
+	and.l		#$FFFF,d6
+	
+	move.l		d0,-(sp)
+	move.l		d6,d0
+	bsr		print_nombre_2_chiffres
+	move.l		(sp)+,d0
+	
+
+	move.l		a0,-(sp)
+	lea			chaine_duree_min_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	mulu		#60,d6
+	sub.l		d6,d0
+
+	move.l		d0,-(sp)
+	bsr		print_nombre_2_chiffres_force
+	move.l		(sp)+,d0
+
+
+	move.l		a0,-(sp)
+	lea			chaine_duree_sec_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+
+
 	move.w		(a0)+,d0
 	move.w		d0,YM_flag_effets_sur_les_voies					; .w= effet sur la voie. A=bit 0, B=bit 1, C=bit 2
 
@@ -298,24 +1448,44 @@ YM_init_ym7:
 
 	btst		#0,d0						; effet sur voie A ?
 	beq.s		YM_init_ym7_pas_effet_sur_voie_A
+	move.l		a0,-(sp)
+	lea			chaine_effet_voie_A_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
 	addq.l		#2,d6						; + 2 registres à lire lors du replay
 	move.l		d1,YM_flag_effets_voie_A
 YM_init_ym7_pas_effet_sur_voie_A:
 
 	btst		#1,d0						; effet sur voie B ?
 	beq.s		YM_init_ym7_pas_effet_sur_voie_B
+	move.l		a0,-(sp)
+	lea			chaine_effet_voie_B_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
 	addq.l		#2,d6						; + 2 registres à lire lors du replay
 	move.l		d1,YM_flag_effets_voie_B
 YM_init_ym7_pas_effet_sur_voie_B:
 
 	btst		#2,d0						; effet sur voie C ?
 	beq.s		YM_init_ym7_pas_effet_sur_voie_C
+	move.l		a0,-(sp)
+	lea			chaine_effet_voie_C_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
 	addq.l		#2,d6						; + 2 registres à lire lors du replay
 	move.l		d1,YM_flag_effets_voie_C
 YM_init_ym7_pas_effet_sur_voie_C:
 
 	btst		#3,d0						; effet buzzer ?
 	beq.s		YM_init_ym7_pas_effet_Buzzer
+	move.l		a0,-(sp)
+	lea			chaine_effet_Buzzer_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
 	addq.l		#2,d6						; + 2 registres à lire lors du replay
 YM_init_ym7_pas_effet_Buzzer:
 
@@ -330,7 +1500,25 @@ YM_init_ym7_pas_effet_Sinus_Sid:
 	moveq		#0,d7
 ; debut init DG
 	move.w		(a0)+,d7								; .w=nombre de digidrums
+	move.l		a0,-(sp)
+	lea			chaine_DG1_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	move.l		d0,-(sp)
+	moveq	#0,d0
+	move.w	d7,d0
+	bsr		print_nombre_2_chiffres
+	move.l		(sp)+,d0
+
+	move.l		a0,-(sp)
+	lea			chaine_DG2_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	cmp			#0,d7
 	beq.s		YM_pas_de_digidrums						; => pas de digidrums
+
 
 ; ----------------------- Init Digidrums -------------------------
 ; D7 = NB de digidrums
@@ -377,7 +1565,26 @@ YM_init_ym7_OK_arrondit_DG:
 YM_pas_de_digidrums:
 ; debut init SID 
 	move.w		(a0)+,d7								; .w= nombre de SID à fabriquer
-	beq.s		YM_pas_de_SID						; => pas de SID
+	move.l		a0,-(sp)
+	lea			chaine_SID1_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	move.l		d0,-(sp)
+	moveq	#0,d0
+	move.w	d7,d0
+	bsr		print_nombre_3_chiffres
+	move.l		(sp)+,d0
+
+	move.l		a0,-(sp)
+	lea			chaine_SID2_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	cmp			#0,d7
+	beq			YM_pas_de_SID						; => pas de SID
+
+
 
 ; TODO : gérer les SID
 ; - une table qui pointe sur le début du sample SID, fin du sample SID, en RAM normale ( utilisée une fois par replay)
@@ -470,6 +1677,24 @@ YM_pas_de_SID:
 ; debut init 	Buzzer
 	moveq		#0,d7
 	move.w		(a0)+,d7									; valeur dans le fichier YM7 = nombre de buzzer ( apres entete, digidrums et table SID )
+	
+	move.l		a0,-(sp)
+	lea			chaine_buzzers1_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	move.l		d0,-(sp)
+	moveq	#0,d0
+	move.w	d7,d0
+	bsr		print_nombre_2_chiffres
+	move.l		(sp)+,d0
+
+	move.l		a0,-(sp)
+	lea			chaine_buzzers2_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	cmp			#0,d7
 	beq.s		YM_pas_de_Buzzer
 
 	move.l		#1,YM_flag_effets_Buzzer
@@ -559,11 +1784,107 @@ YM_init_ym7_OK_arrondit_Buzzer:
 
 
 YM_pas_de_Buzzer:
+	moveq		#0,d7
 	move.w		(a0)+,d7									; D7=nb samples sinus sid
+	move.l		a0,-(sp)
+	lea			chaine_Sinus_Sid1_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	move.l		d0,-(sp)
+	moveq	#0,d0
+	move.w	d7,d0
+	bsr		print_nombre_2_chiffres
+	move.l		(sp)+,d0
+
+	move.l		a0,-(sp)
+	lea			chaine_Sinus_Sid2_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
+	cmp			#0,d7
 	beq.s		YM_pas_de_Sinus_Sid
 
-; TODO : gérer les Sinus Sid
-	illegal
+	; d7=nb sinus sid
+	move.l		#1,YM_flag_effets_Sinus_Sid
+	
+; dans le fichier YM7, table avec :
+;	- taille du sample sinus sid
+;	- flag sample sinus sid / bit3 : 0=mono / 1=stereo
+;	- pointeur actuel + (nb_de_sinus_sid * 4) = pointeur sur datas samples sinus sid
+;
+; =>
+;		- faire une table : pointeur adresse sinus sid.L, taille sinus sid 16:16.L
+;		- copier les octets de mono au debut du Sinus Sid / supprimer la stereo
+
+	move.l		d7,d0
+	lsl.l		#3,d0			; * 8
+	.if			YM_Samples_Sinus_SID_en_RAM_DSP=1
+		bsr			YM_malloc_DSP
+	.endif
+	.if			YM_Samples_Sinus_SID_en_RAM_DSP=0
+		bsr			YM_malloc
+	.endif	
+; d0 = pointeur sur la tables des infos des samples des sinus sid
+	move.l		d0,YM_DSP_pointeur_table_samples_Sinus_Sid
+	move.l		d0,a2
+
+	move.l		d7,d0
+	lsl.l		#2,d0			; * 4 : taille.w + flag.w
+	move.l		a0,a1
+	add.l		d0,a1			; A1 = pointe sur les samples sinus sid
+
+YM_init_Sinus_sid_boucle_copie_sample:
+
+	move.l		a1,(a2)+		; pointeur sur le sample
+	moveq		#0,d1
+	move.w		(a0)+,d1		; d1= taille du sample sinus sid
+
+	move.w		(a0)+,d2		; d2=flag sample Sinus sid
+	btst		#3,d2
+	beq.s		YM_init_Sinus_sid_sample_mono
+; le sample est stéréo
+; il faut copier (taille/2)-1 octets de a1+2 à a1+1
+	lsr.l		#1,d1			; taille divisée par 2
+	swap		d1				; en 16:16
+	move.l		d1,(a2)+		; taille du sample dans la table pour le replay DSP
+	swap		d1
+
+	lea			1(a1),a3		; dest = octet 1 du sample
+	lea			2(a1),a1		; source = octet 2 du sample
+	moveq		#0,d4
+	move.w		d1,d4
+	;lsr.w		#1,d4			; taille divisée par 2
+	subq.l		#2,d4			; -1 pour dbf + -1 pour garder le 1er octet du sample
+
+YM_init_Sinus_sid_sample_stereo_boucle_copie:
+	move.b		(a1),d3
+	add.b		#$80,d3			; on de-signe le sample
+	move.b		d3,(a3)+
+	lea			2(a1),a1
+	
+	dbf.w		d4,YM_init_Sinus_sid_sample_stereo_boucle_copie
+	bra.s		YM_init_Sinus_sid_sample_raccord_boucle
+
+YM_init_Sinus_sid_sample_mono:
+	swap		d1				; en 16:16
+	move.l		d1,(a2)+		; taille du sample dans la table pour le replay DSP
+	swap		d1
+
+	moveq		#0,d4
+	move.w		d1,d4
+	subq.l		#1,d4			; pour le dbf
+YM_init_Sinus_sid_sample_mono_boucle_designe:
+	move.b		(a1),d3
+	add.b		#$80,d3			; on de-signe le sample
+	move.b		d3,(a1)+
+	dbf			d4,YM_init_Sinus_sid_sample_mono_boucle_designe
+
+YM_init_Sinus_sid_sample_raccord_boucle:
+	subq.l		#1,d7
+	bgt.s		YM_init_Sinus_sid_boucle_copie_sample
+
+	move.l		a1,a0				; positionne apres les samples
 
 YM_pas_de_Sinus_Sid:
 
@@ -594,6 +1915,15 @@ YM_pas_de_Sinus_Sid:
 ; nb blocs LZ4:
 	moveq		#0,d0
 	move.w		(a0)+,d0										; nombre de bloc compressés / format YM7 = .w= ? de 1 à 70 / par exemple 0004	( stocké en C0576A ) = nombre de blocs de donn�es compress�es ?
+	move.l		d0,-(sp)
+	bsr		print_nombre_2_chiffres
+	move.l		(sp)+,d0
+
+	move.l		a0,-(sp)
+	lea			chaine_blocsLZ4_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
 	move.l		d0,YM_nombre_de_blocs_lZ4
 
 	move.l		YM_ecart_entre_frames_blocs,d1
@@ -645,6 +1975,11 @@ YM_init_plus_de_2_blocs:
 
 ; / a1=fin du bloc decompresse
 
+	move.l		a0,-(sp)
+	lea			chaine_decomp1LZ4_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
+
 
 ; decompresser le 2eme bloc
 
@@ -657,7 +1992,7 @@ YM_init_plus_de_2_blocs:
 	move.w		YM_nb_registres_par_frame,d1
 	mulu		d1,d0
 
-	move.l		#65536,d0
+	;move.l		#65536,d0
 	move.l		d0,d2
 
 	bsr			YM_malloc	
@@ -679,7 +2014,7 @@ YM_init_au_moins_2_blocs:
 	move.w		YM_nb_registres_par_frame,d1
 	mulu		d1,d0
 ; allouer la RAM
-	move.l		#65536,d0
+	;move.l		#65536,d0
 
 ; d0=taille à allouer
 	bsr.s		YM_malloc
@@ -700,6 +2035,11 @@ YM_init_au_moins_2_blocs:
 ; / a1=fin du bloc decompresse
 
 	move.l		a5,YM_LZ4_pointeur_actuel_datas_compressees
+
+	move.l		a0,-(sp)
+	lea			chaine_decomp2LZ4_init_YM7,a0
+	bsr			print_string
+	move.l		(sp)+,a0
 
 
 ; on a 2 blocs decompressés
@@ -1021,10 +2361,10 @@ DSP_base_memoire:
 	jump	(r28)													; 2 octets
 	load	(r30),r29	; read flags								; 2 octets = 16 octets
 ; Timer 1 interrupt
-	movei	#DSP_LSP_routine_interruption_Timer1,r28						; 6 octets
-	movei	#D_FLAGS,r30											; 6 octets
-	jump	(r28)													; 2 octets
-	load	(r30),r29	; read flags								; 2 octets = 16 octets
+	movei	#DSP_LSP_routine_interruption_Timer1,r12						; 6 octets
+	movei	#D_FLAGS,r16											; 6 octets
+	jump	(r12)													; 2 octets
+	load	(r16),r13	; read flags								; 2 octets = 16 octets
 ; Timer 2 interrupt	
 	movei	#DSP_LSP_routine_interruption_Timer2,r28						; 6 octets
 	movei	#D_FLAGS,r30											; 6 octets
@@ -1061,7 +2401,7 @@ DSP_LSP_routine_interruption_I2S:
 ; bank 0 : 
 ; R28/R29/R30/R31
 ; +
-; R18/R19/R20/R21/R22/R23/R24/R25/R26/R27 - R19 dispo
+; R18/R19/R20/R21/R22/R23/R24/R25/R26/R27
 ;
 ;-------------------------------------------------------------------------------------------------
 ; R28/R29/R30/R31 : utilisé par l'interruption
@@ -1650,13 +2990,50 @@ YM_DSP_replay_sample_pas_de_SID_voie_C:
 	and		R25,R22					; R23=volume pour le canal B
 ; R22 = sample canal C
 
+; gerer Sinus Sid
+; dans R21
 
+	moveq	#0,R21
+	movei	#YM_DSP_increment_sample_Sinus_SID,R25
+	movei	#YM_DSP_replay_sample_pas_de_Sinus_SID,R26
+	load	(R25),R24
+	cmpq	#0,R24
+	jump	eq,(R26)
+	;nop
+	addq	#4,R25					; YM_DSP_pointeur_sample_Sinus_SID
+	load	(R25),R27				; R27 = pointeur sample
+	addq	#4,R25
+	load	(R25),R26				; R26=YM_DSP_offset_sample_Sinus_SID 16:16
+	move	R26,R19
+	move	R25,R18
+	addq	#4,R25					; on pointe sur YM_DSP_taille_sample_Sinus_SID
+	shrq	#16,R19					; partie entiere
+	add		R19,R27
+	loadb	(R27),R21				; R21 = sample en 8 bits
+	shlq	#7,R21					; passage en 15 bits
+	
+	add		R24,R26					; offset = offset + increment 16:16
+	load	(R25),R27				; R27 = taille
+	cmp		R27,R26
+	jr		mi,YM_DSP_replay_sample_Sinus_Sid_pas_de_bouclage
+	moveq	#0,R27
+	subq	#12,R25					; on pointe sur YM_DSP_increment_sample_Sinus_SID
+	store	R27,(R25)
+	
+YM_DSP_replay_sample_Sinus_Sid_pas_de_bouclage:	
+	store	R26,(R18)				; R18 pointe sur YM_DSP_offset_sample_Sinus_SID
+	
+YM_DSP_replay_sample_pas_de_Sinus_SID:
+; sans stereo : R20=A / R23=B / R22=C / R21=D
 
-; sans stereo : R20=A / R23=B / R22=C
+; mono desactivé
+	.if		STEREO=0
 	shrq	#1,R20					; quand volume maxi = 32767
+	shrq	#1,R21					; quand volume maxi = 32767
 	shrq	#1,R23
 	shrq	#1,R22
 	add		R23,R20					; R20 = R20=canal A + R23=canal B
+	add		R21,R20					; R20 = R20=canal A + R23=canal B + R21=canal D
 	movei	#32768,R27
 	add		R22,R20					; + canal C
 	movei	#L_I2S,r26
@@ -1664,19 +3041,85 @@ YM_DSP_replay_sample_pas_de_SID_voie_C:
 	store	r20,(r26)				; write right channel
 	addq	#4,R26
 	store	r20,(r26)				; write left channel
+	.endif
+	
+	.if		STEREO=1
+	movei	#$FFFF,R17
+	;movei	#100,R19
+	;and		R17,R20
+	;and		R17,R21
+	;and		R17,R22
+	;and		R17,R23
+
+	movei	#YM_DSP_Voie_A_pourcentage_Droite,R24
+	move	R20,R26					; R26=A
+	mult	R24,R26
+	shrq	#STEREO_shit_bits,R26
+	
+	movei	#YM_DSP_Voie_B_pourcentage_Droite,R24
+	move	R23,R25					; R27=B
+	mult	R24,R25
+	shrq	#STEREO_shit_bits,R25
+	
+	movei	#YM_DSP_Voie_C_pourcentage_Droite,R24
+	move	R22,R18					; R18=C
+	mult	R24,R18
+	shrq	#STEREO_shit_bits,R18
+
+	and		R17,R26
+	and		R17,R25
+	add		R26,R25					; R27=A+B
+
+	movei	#YM_DSP_Voie_D_pourcentage_Droite,R24
+	move	R21,R26					; R26=D
+	mult	R24,R26
+	shrq	#STEREO_shit_bits,R26
+	
+	and		R17,R18
+	add		R18,R25
+	;or		R26,R26
+	and		R17,R26
+	add		R26,R25					; R25=droite
 
 
-; R22 = sample canal C
-;	movei	#32768,R27
-;	add		R23,R20					; R20 = R20=canal A + R23=canal B
-;	movei	#L_I2S,r26
-;	sub		R27,R22					; canal C / resultat signé sur 16 bits
-;	sub		R27,R20					; resultat signé sur 16 bits
-; envoi du sample
+	movei	#YM_DSP_Voie_A_pourcentage_Gauche,R24
+	mult	R24,R20
+	shrq	#STEREO_shit_bits,R20
+	
+	movei	#YM_DSP_Voie_B_pourcentage_Gauche,R24
+	mult	R24,R23
+	shrq	#STEREO_shit_bits,R23
+	
+	movei	#YM_DSP_Voie_C_pourcentage_Gauche,R24
+	mult	R24,R22
+	shrq	#STEREO_shit_bits,R22
 
-;	store	r22,(r26)				; write right channel
-;	addq	#4,R26
-;	store	r20,(r26)				; write left channel
+	and		R17,R20
+	and		R17,R23
+	add		R20,R23					; R23=A+B
+
+	movei	#YM_DSP_Voie_D_pourcentage_Gauche,R24
+	mult	R24,R21
+	shrq	#STEREO_shit_bits,R21
+
+	movei	#32768,R27
+	
+	and		R17,R22
+	add		R22,R23
+	;or		R21,R21
+	and		R17,R21
+	add		R21,R23					; R23=gauche
+
+	sub		R27,R25
+	sub		R27,R23
+
+	
+	movei	#L_I2S,r26
+	store	r25,(r26)				; write right channel
+	addq	#4,R26
+	store	r23,(r26)				; write left channel
+
+	.endif
 
 	.if		DSP_DEBUG
 ; change la couleur du fond
@@ -1719,6 +3162,10 @@ YM_DSP_replay_sample_pas_de_SID_voie_C:
 ;--------------------------------------------
 ; ---------------- Timer 1 ------------------
 ;--------------------------------------------
+; autorise interruptions, pour timer I2S
+	bclr	#3,r13		; clear IMASK
+	store	r13,(r16)	; restore flags
+
 DSP_LSP_routine_interruption_Timer1:
 	.if		DSP_DEBUG_T1
 ; change la couleur du fond
@@ -1727,11 +3174,13 @@ DSP_LSP_routine_interruption_Timer1:
 	storew	r1,(r0)
 	.endif
 
+
 ;-------------------------------------------------------------------------------------------------
 ; -------------------------------------------------------------------------------
 ; routine de lecture des registres YM
 ; bank 0 : 
-; R28/R29/R30/R31
+ ; gestion timer deplacé sur :
+; R12(R28)/R13(R29)/R16(R30)
 ; +
 ; R0/R1/R2/R3/R4/R5/R6/R7/R8/R9/R10 + R14
 ; -------------------------------------------------------------------------------
@@ -2618,7 +4067,54 @@ DSP_lecture_registre_effet_Buzzer_PAS_de_clear_offset_envbuzzer_partie_entiere:
 
 DSP_lecture_registre_effet_Buzzer_pas_d_effet:
 	.endif
-	
+
+
+; -----------------------------
+; gestion effet Sinus Sid
+	movei		#YM_flag_effets_Sinus_Sid,R3
+	load		(R3),R3
+	movei		#DSP_lecture_registre_effet_Sinus_Sid_pas_d_effet,R4
+	cmpq		#0,R3
+	jump		eq,(R4)
+	nop
+; on doit gérer un sinus Sid
+	loadb		(R1),R2						; on lit 1 octet = =numero du sample a jouer + frequence + activation : bit 7 = activation Sinus Sid / 
+	add			R8,R1
+
+	btst		#7,R2
+	jump		eq,(R4)
+	;nop
+	move		R2,R3
+	moveq		#%11,R4
+	movei		#YM_DSP_table_frequences_Sinus_Sid_Jaguar,R5			; table des 4 frequences calculées pour la jaguar
+	and			R4,R3						; R3 = frequence, de 0 à 3
+	shlq		#2,R3						; * 4
+	add			R3,R5
+	movei		#YM_DSP_increment_sample_Sinus_SID,R6					; debut des données pour le replay sinus sid
+	load		(R5),R4						; R4 = increment en 16:16
+	store		R4,(R6)						; stocke l'increment en 16:16
+
+	movei		#%11111000,R3				; mask pour ne garder que le numero de sample sur bits 2 à 6 << 1
+	addq		#4,R6						; on passe à YM_DSP_pointeur_sample_Sinus_SID
+	add			R2,R2						; *2
+	movei		#YM_DSP_pointeur_table_samples_Sinus_Sid,R4
+	and			R3,R2						; R2 = numero de sample *8
+	load		(R4),R4
+	add			R2,R4						; pointe sur le numero de sample * 8
+	load		(R4),R3						; R3=pointeur sur sample sinus sid
+	or			R3,R3
+	addq		#4,R4
+	store		R3,(R6)						; YM_DSP_pointeur_sample_Sinus_SID
+	load		(R4),R5						; R5=taille sample sinus sid en 16:16
+	addq		#4,R6
+	moveq		#0,R4
+	store		R4,(R6)						; YM_DSP_offset_sample_Sinus_SID=0
+	addq		#4,R6
+	store		R5,(R6)						; YM_DSP_taille_sample_Sinus_SID
+
+DSP_lecture_registre_effet_Sinus_Sid_pas_d_effet:
+
+
 ;---> precalculer les valeurs qui ne bougent pas pendant 1 VBL entiere	
 
 ; debug avec buffer pour voir les valeurs
@@ -2658,6 +4154,8 @@ DSP_lecture_registre_effet_Buzzer_pas_d_effet:
 	store		R8,(R7)
 
 	load		(R5),R3
+	movei		#PSG_ecart_entre_les_registres_ymdata,R9
+	store		R3,(R9)			; PSG_ecart_entre_les_registres_ymdata
 	
 DSP_lecture_registres_player_VBL_YM7_pas_fin_du_bloc:
 	store		R1,(R0)			; YM_pointeur_actuel_ymdata
@@ -2666,7 +4164,10 @@ DSP_lecture_registres_player_VBL_YM7_pas_fin_du_bloc:
 
 	.endif
 
-	
+	movei	#vbl_counter_replay_DSP,R0
+	load	(R0),R1
+	addq	#1,R1
+	store	R1,(R0)
 	
 	.if		DSP_DEBUG_T1
 ; change la couleur du fond
@@ -2677,15 +4178,15 @@ DSP_lecture_registres_player_VBL_YM7_pas_fin_du_bloc:
 
 ;------------------------------------	
 ; return from interrupt Timer 1
-	load	(r31),r28	; return address
+	load	(r31),r12	; return address
 	;bset	#10,r29		; clear latch 1 = I2S
-	bset	#11,r29		; clear latch 1 = timer 1
+	bset	#11,r13		; clear latch 1 = timer 1
 	;bset	#12,r29		; clear latch 1 = timer 2
-	bclr	#3,r29		; clear IMASK
+	bclr	#3,r13		; clear IMASK
 	addq	#4,r31		; pop from stack
-	addqt	#2,r28		; next instruction
-	jump	t,(r28)		; return
-	store	r29,(r30)	; restore flags
+	addqt	#2,r12		; next instruction
+	jump	t,(r12)		; return
+	store	r13,(r16)	; restore flags
 
 
 ; ------------------- N/A ------------------
@@ -3054,11 +4555,9 @@ YM_DSP_retour_depack_LZ4_boucle_principale_DSP:
 
 	.phrase
 
-EDZTMP1:		dc.l				0
-EDZTMP2:		dc.l				0
-EDZTMP3:		dc.l				0
 
 ; datas DSP
+vbl_counter_replay_DSP:				dc.l			0
 YM_DSP_pointeur_sur_table_des_pointeurs_env_Buzzer:		dc.l		0
 
 YM_DSP_registre8:			dc.l			0
@@ -3142,6 +4641,13 @@ YM_DSP_increment_envbuzzer_en_cours:				dc.l		0		; increment avancée envbuzzer 
 YM_DSP_offset_envbuzzer_en_cours:					dc.l		0		; offset actuel sur l'envbuzzer en 16:16
 YM_DSP_taille_envbuzzer_en_cours:					dc.l		0		; taille de l'envbuzzer - 16:16 ??
 
+; variables Sinus Sid
+YM_DSP_increment_sample_Sinus_SID:					dc.l		0		; increment en 16:16
+YM_DSP_pointeur_sample_Sinus_SID:					dc.l		0		; pointeur fixe
+YM_DSP_offset_sample_Sinus_SID:					dc.l		0		; offset : 16:16 / entier:virgule
+YM_DSP_taille_sample_Sinus_SID:					dc.l		0		; taille en 16:16 ?
+
+YM_DSP_pointeur_table_samples_Sinus_Sid:		dc.l		0		; pointeur sur la table des infos des samples sinus sid : pointeur sur le sample.L, taille du sample en 16:16.L
 
 
 YM_DSP_table_de_volumes:
@@ -3260,10 +4766,16 @@ YM_DSP_table_digidrums:
 
 YM_DSP_pointeur_sur_samples_SID_ram_DSP:		dc.l		0
 	.phrase	
-YM_DSP_fin:
 
+
+YM_DSP_table_frequences_Sinus_Sid_Jaguar:
+	dc.l		0,0,0,0
 	
-	
+
+;---------------------
+; FIN DE LA RAM DSP
+YM_DSP_fin:
+;---------------------
 
 
 SOUND_DRIVER_SIZE			.equ			YM_DSP_fin-DSP_base_memoire
@@ -3276,24 +4788,110 @@ SOUND_DRIVER_SIZE			.equ			YM_DSP_fin-DSP_base_memoire
 
 	.even
 	.phrase
+curseur_Y_min		.equ		8
+curseur_x:	dc.w		0
+curseur_y:	dc.w		curseur_Y_min
 
+chaine_debut_init_YM7:			dc.b	"Init YM7",10,0
+chaine_HZ_init_YM7:				dc.b	" Hz.",10,0
+chaine_duree_init_YM7:			dc.b	"Song length : ",0
+chaine_duree_min_init_YM7:			dc.b	":",0
+chaine_duree_sec_init_YM7:			dc.b	10,0
+
+chaine_DG1_init_YM7:				dc.b	"There are ",0
+chaine_DG2_init_YM7:			dc.b	" digidrums.",10,0
+chaine_SID1_init_YM7:			dc.b	"There are ",0
+chaine_SID2_init_YM7:			dc.b	" SIDs.",10,0
+chaine_effet_Buzzer_init_YM7:	dc.b	"Buzzer",10,0
+chaine_buzzers1_init_YM7:			dc.b	"There are ",0
+chaine_buzzers2_init_YM7:			dc.b	" Buzzers.",10,0
+chaine_Sinus_Sid1_init_YM7:			dc.b	"There are ",0
+chaine_Sinus_Sid2_init_YM7:			dc.b	" Sinus SID.",10,0
+chaine_effet_voie_A_init_YM7:	dc.b	"effect on channel A",10,0
+chaine_effet_voie_B_init_YM7:	dc.b	"effect on channel B",10,0
+chaine_effet_voie_C_init_YM7:	dc.b	"effect on channel C",10,0
+chaine_blocsLZ4_init_YM7:		dc.b	" LZ4 chunks in the file",10,0
+chaine_decomp1LZ4_init_YM7:		dc.b	"LZ4 first chunk depacked",10,0
+chaine_decomp2LZ4_init_YM7:		dc.b	"LZ4 second chunk depacked",10,0
+chaine_RAM_DSP:					dc.b	"DSP RAM available while running : ",0
+chaine_replay_frequency:		dc.b	"Replay frequency : ",0
+chaine_playing_YM7:				dc.b	"Now playing in ",0
+chaine_playing_YM7_MONO:		dc.b	"mono.",10,10,0
+chaine_playing_YM7_STEREO:		dc.b	"stereo.",10,10,0
+
+chaine_replay_YM7:				
+	dc.b	"A: "
+chaine_replay_TA:
+	dc.b	"T"
+chaine_replay_NA:
+	dc.b	"N"
+chaine_replay_envA:
+	dc.b	"E"
+chaine_replay_SID_A:
+	dc.b	"S"
+chaine_replay_DG_A:
+	dc.b	"D  "
+	dc.b	"B: "
+chaine_replay_TB:
+	dc.b	"T"
+chaine_replay_NB:
+	dc.b	"N"
+chaine_replay_envB:
+	dc.b	"E"
+chaine_replay_SID_B:
+	dc.b	"S"
+chaine_replay_DG_B:
+	dc.b	"D  "
+	dc.b	"C: "
+chaine_replay_TC:
+	dc.b	"T"
+chaine_replay_NC:
+	dc.b	"N"
+chaine_replay_envC:
+	dc.b	"E"
+chaine_replay_SID_C:
+	dc.b	"S"
+chaine_replay_DG_C:
+	dc.b	"D  "
+chaine_replay_Sinus:
+	dc.b	"s"
+chaine_replay_Buzzer:
+	dc.b	"Z ",0
+
+
+
+couleur_char:				dc.b		25
+
+	even
+fonte:	
+	.include	"fonte1plan.s"
+	even
+	
+            .dphrase
+stoplist:		dc.l	0,4
+
+
+
+
+YM_table_frequences_Sinus_Sid_Amiga:		dc.w	566, 283, 141, 141
 
 
 fichier_ym7:
-	.incbin				"YM/Cube_Crystallized.ym7"				; 50 Hz, env voie B des le debut, digidrums voie B / pas de Sid, pas de D, pas de buzzer
+	;.incbin				"YM/Cube_Crystallized.ym7"				; 50 Hz, env voie B des le debut, digidrums voie B / pas de Sid, pas de D, pas de buzzer
 
-	;.incbin				"YM/Gwem_Gwem_Camp.ym7"					; 57 HZ/SID/D
+	;.incbin				"YM/Gwem_Operation707.ym7"
+	; .incbin				"YM/Gwem_Gwem_Camp.ym7"					; 57 HZ/SID/D
 	;.incbin			"YM/Mad_Max_Ajh_99.ym7"					; SID
 	;.incbin			"YM/505_Pulse.ym7"						; SID/
 	;.incbin			"YM/505_Oxygene.ym7"							; 51 hz
 	;.incbin			"YM/UltraSyd_Thunderdome.ym7"					; 69 HZ
-	;.incbin			"YM/Tao_Ultimate_Medley_Part_1.ym7"		; 200 HZ = fait plus de 2 mo decompressé
-	;.incbin			"Gwem_Stardust_Memory.ym7"				; D/Sinus Sid + Sid
-	;.incbin			"Dma_Sc_Galaxy_Trip.ym7"				; D/Sinus Sid + Sid 
-	;.incbin			"505_Robost.ym7"						; D/sinus Sid
-	;.incbin			"YM/Cube_Bullet_Sequence.ym7"				; SID + Buzzer
+	;.incbin			"YM/Gwem_Stardust_Memory.ym7"				; D/Sinus Sid + Sid
+	;.incbin			"YM/Dma_Sc_Galaxy_Trip.ym7"				; D/Sinus Sid + Sid 
+	;.incbin			"YM/505_Robost.ym7"						; D/sinus Sid
+	.incbin			"YM/Cube_Bullet_Sequence.ym7"				; SID + Buzzer
 	;.incbin			"YM/Gwem_flash_of_the_rom.ym7"			; SID + Buzzer + 59 Hz
 	
+	;.incbin			"YM/Tao_Ultimate_Medley_Part_1.ym7"		; 200 HZ = fait plus de 2 mo decompressé
 	;.incbin		"YM/Mad_Max_Buzzer.ym7"					; YM7 buzzer + SID
 	;.incbin			"YM/Tomchi_Sidified.ym7"					; SID a partir de la 2eme frame. (+1)
 	;.incbin		"YM/DMA_Sc_Fantasia_main.ym7"					; YM7 SID
@@ -3358,7 +4956,20 @@ YM_LZ4_nb_bloc_LZ4_disponibles:					ds.l		1
 ;EDZTMP1:							ds.l			1
 ;pointeur_buffer_de_debug:		ds.l			1
 ;buffer_de_debug:				ds.l			480
-	
+
+_50ou60hertz:			ds.l	1
+ntsc_flag:				ds.w	1
+a_hdb:          		ds.w   1
+a_hde:          		ds.w   1
+a_vdb:          		ds.w   1
+a_vde:          		ds.w   1
+width:          		ds.w   1
+height:         		ds.w   1
+taille_liste_OP:		ds.l	1
+vbl_counter:			ds.l	1
+
+            .dphrase
+ecran1:				ds.b		320*256				; 8 bitplanes
 
 FIN_RAM:
 
