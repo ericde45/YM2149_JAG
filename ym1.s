@@ -78,7 +78,7 @@ display_infos_during_replay			.equ		1
 display_infos_debug					.equ		0
 
 	
-DSP_Audio_frequence					.equ			48000				; 22300=>17 => 23082 / 
+DSP_Audio_frequence					.equ			26000				; real hardware needs lower sample frequencies than emulators !
 YM_frequence_YM2149					.equ			2000000				; 2 000 000 = Atari ST , 1 000 000 Hz = Amstrad CPC, 1 773 400 Hz = ZX spectrum 
 YM_DSP_frequence_MFP				.equ			2457600
 YM_DSP_precision_virgule_digidrums	.equ			11
@@ -3113,6 +3113,7 @@ YM_DSP_replay_sample_pas_de_Sinus_SID:
 	addq	#4,R26
 	store	r20,(r26)				; write left channel
 	.endif
+
 	
 	.if		STEREO=1
 
@@ -4943,7 +4944,7 @@ fichier_ym7:
 	;.incbin				"YM/Gwem_Operation707.ym7"
 	; .incbin				"YM/Gwem_Gwem_Camp.ym7"					; 57 HZ/SID/D
 	;.incbin			"YM/505_Pulse.ym7"						; SID/
-	;.incbin			"YM/505_Oxygene.ym7"							; 51 hz
+	.incbin			"YM/505_Oxygene.ym7"							; 51 hz
 	;.incbin			"YM/UltraSyd_Thunderdome.ym7"					; 69 HZ
 	;.incbin			"YM/Gwem_Stardust_Memory.ym7"				; D/Sinus Sid + Sid
 	;.incbin			"YM/Dma_Sc_Galaxy_Trip.ym7"				; D/Sinus Sid + Sid 
@@ -4954,7 +4955,7 @@ fichier_ym7:
 	;.incbin		"YM/Mad_Max_Buzzer.ym7"					; YM7 buzzer + SID
 	;.incbin			"YM/Tomchi_Sidified.ym7"					; SID a partir de la 2eme frame. (+1)
 	;.incbin		"YM/DMA_Sc_Fantasia_main.ym7"					; YM7 SID
-	.incbin			"YM/Furax_Virtualescape_main.ym7"				; YM7 SID
+	;.incbin			"YM/Furax_Virtualescape_main.ym7"				; YM7 SID
 	;.incbin		"YM/MadMax_Virtual_Esc_End.ym7"			; YM7 SID voie A
 	;.incbin			"YM/LotekStyle_Alpha_Proxima.ym7"		; SID voie C au debut
 	;.incbin		"YM/PYM_main_menu.ym7"					; YM7 avec enveloppe et digidrums - OK
