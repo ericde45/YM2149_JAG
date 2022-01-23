@@ -22,7 +22,7 @@
 ;	OK - décompresser LZ4 au fur et à mesure. en utilisant le 68000.
 ;	OK - décompresser LZ4 au fur et à mesure. en utilisant le DSP.
 
-;	- simplifier la lecture des effets : BTST sur 1 seul registre
+;	OK - simplifier la lecture des effets : BTST sur 1 seul registre
 ;	OK - with values decreasing from 8000 to zero. This will avoid a loud click on start up
 ;	OK - forcer pointeur sur volume pour digidrums dans Timer 1
 ;	OK - stéréo !!!! : placer 1 voie 100% a gauche, 1 voie 100% a droite, et 1 voie 60% a gauche/40% a droite : utiliser des % pour droite et gauche pour chaque canal A B C D, et multiplier
@@ -61,10 +61,11 @@ YM_DSP_Voie_D_pourcentage_Droite		.equ			14
 ; algo de la routine qui genere les samples
 ; 3 canaux : increment onde carrée * 3 , increment noise, volume voie * 3 , increment enveloppe
 
-CLEAR_BSS			.equ			0									; 1=efface toute la BSS jusqu'a la fin de la ram centrale
+CLEAR_BSS			.equ			1									; 1=efface toute la BSS jusqu'a la fin de la ram centrale
 DSP_DEBUG			.equ			0
 DSP_DEBUG_T1		.equ			0
 DSP_DEBUG_BUZZER	.equ			0									; 0=Buzzer ON / 1=pas de gestion du buzzer
+I2S_during_Timer1	.equ			1									; 0= I2S waits while timer 1 / 1=IMASK cleared while Timer 1
 YM_avancer			.equ			1									; 0=on avance pas / 1=on avance
 YM_position_debut_dans_musique		.equ		0
 YM_Samples_SID_en_RAM_DSP			.equ		1						; 0 = samples SID en RAM 68000 / 1 = samples SID en RAM DSP.
@@ -73,8 +74,11 @@ YM_LZ4_depack_au_DSP				.equ		1						; 1=depack LZ4 au DSP pendant le replay / 0
 DSP_random_Noise_generator_method	.equ		4						; algo to generate noise random number : 1 & 4 (LFSR) OK uniquement // 2 & 3 : KO
 VBLCOUNTER_ON_DSP_TIMER1			.equ		0						; 0=vbl counter in VI interrupt CPU / 1=vbl counter in Timer 1
 
+display_infos_during_replay			.equ		1
+display_infos_debug					.equ		0
+
 	
-DSP_Audio_frequence					.equ			65000				; 22300=>17 => 23082 / 
+DSP_Audio_frequence					.equ			48000				; 22300=>17 => 23082 / 
 YM_frequence_YM2149					.equ			2000000				; 2 000 000 = Atari ST , 1 000 000 Hz = Amstrad CPC, 1 773 400 Hz = ZX spectrum 
 YM_DSP_frequence_MFP				.equ			2457600
 YM_DSP_precision_virgule_digidrums	.equ			11
@@ -105,8 +109,8 @@ YM_DSP_precision_virgule_envbuzzer	.equ			16
 
 ; ----------------------------
 ; parametres affichage
-ob_liste_originale			equ		(ENDRAM-$4000)							; address of list (shadow)
-ob_list_courante			equ		(ob_liste_originale+$2000)				; address of read list
+;ob_liste_originale			equ		(ENDRAM-$4000)							; address of list (shadow)
+ob_list_courante			equ		((ENDRAM-$4000)+$2000)				; address of read list
 nb_octets_par_ligne			equ		320
 nb_lignes					equ		256
 
@@ -124,7 +128,7 @@ DSP_ISP			equ		(DSP_USP-(4*DSP_STACK_SIZE))
 
 	.if			CLEAR_BSS=1
 	lea			DEBUT_BSS,a0
-	lea			$200000,a1
+	lea			FIN_RAM,a1
 	moveq		#0,d0
 	
 boucle_clean_BSS:
@@ -132,7 +136,7 @@ boucle_clean_BSS:
 	cmp.l		a0,a1
 	bne.s		boucle_clean_BSS
 	.endif
-
+	
 	move.w		#$000,JOYSTICK
 
 	.if			0=1
@@ -164,10 +168,20 @@ jesuisenntsc:
 jesuisenpal:
 
 
-	;move.l		#$1234,EDZ_compteur_reset_offset_entier_voie_A
 
 	;lea			buffer_de_debug,a0
 	;move.l		a0,pointeur_buffer_de_debug
+
+; remplit de merdouille:
+	;lea			fin_buffer_de_debug,a1
+	;move.l		#$55,d0
+;.remplitdem:
+	;move.b		d0,(a0)+
+	;cmp.l		a0,a1
+	;bne.s		.remplitdem
+
+	
+
 
 	move.l		#INITSTACK, sp	
 	move.w		#%0000011011000111, VMODE			; 320x256
@@ -175,7 +189,7 @@ jesuisenpal:
     bsr     InitVideo               	; Setup our video registers.
 
 
-	bsr		creer_Object_list
+	;bsr		creer_Object_list
 	jsr     copy_olist              	; use Blitter to update active list from shadow
 
 	move.l	#ob_list_courante,d0					; set the object list pointer
@@ -240,24 +254,27 @@ boucle_copie_bloc_DSP:
 
 
 ; init DSP
+; $40FC
 	; set timers
-	move.l	#DSP_Audio_frequence,d0
-	; n = (830968,75/(2*freq))-1 = 25 for 16000hz
-        ; f = 830968,75/(2*(n+1))
-	move.l	#83096875,d1
-	divu.w	d0,d1
-	and.l	#$ffff,d1
-	divu.w	#200,d1
-	and.l	#$ffff,d1
-	subq.l	#1,d1
-	move.l	d1,DSP_parametre_de_frequence_I2S
-	
+	move.l		#DSP_Audio_frequence,d0
+	move.l		#415530,d1
+	lsl.l		#8,d1
+	divu		d0,d1
+	and.l		#$ffff,d1
+	add.l		#128,d1			; +0.5 pour arrondir
+	lsr.l		#8,d1
+	subq.l		#1,d1
+	move.l		d1,DSP_parametre_de_frequence_I2S
+
+;calcul inverse
  	addq.l	#1,d1
-	mulu.w	#200,d1
- 	move.l	#83096875,d0
- 	divu.w	d1,d0
-	and.l	#$ffff,d0
- 	move.l	d0,DSP_frequence_de_replay_reelle_I2S
+	add.l	d1,d1		; * 2 
+	add.l	d1,d1		; * 2 
+	lsl.l	#4,d1		; * 16
+	move.l	#26593900,d0
+	divu	d1,d0			; 26593900 / ( (16*2*2*(+1))
+	and.l		#$ffff,d0
+	move.l	d0,DSP_frequence_de_replay_reelle_I2S
 
 	bsr			YM_calcul_frequences_Sinus_Sid
 
@@ -332,23 +349,25 @@ toto:
 	
 
 ;$40D0
-	;lea			buffer_de_debug,a0
-	;move.l		pointeur_buffer_de_debug,a1
 
 
-	move.l		YM_DSP_increment_sample_Sinus_SID,d0
-	cmp.l		#0,d0
-	beq.s		ok_toto
+	;move.l		YM_DSP_increment_sample_SID_voie_A,d0
+	;cmp.l		#0,d0
+	;beq.s		ok_toto
 	
 ; $40B8
 	
-	move.l		YM_DSP_pointeur_sample_Sinus_SID,d1 
-	move.l		YM_DSP_offset_sample_SID_voie_A,d2
-	move.l		YM_DSP_offset_sample_Sinus_SID,d3
-	move.l		YM_DSP_taille_sample_Sinus_SID,d4
-	move.l		YM_DSP_pointeur_sur_table_infos_samples_SID,d5
-	move.l		YM_DSP_volA,d6
-	move.l		YM_DSP_pointeur_sur_source_du_volume_A,d7
+	;move.l		YM_DSP_pointeur_sample_SID_voie_A,d1 
+	;move.l		YM_DSP_offset_sample_SID_voie_A,d2
+	;move.l		YM_DSP_taille_sample_SID_voie_A,d3
+	;move.l		YM_DSP_registre8,d4
+	;move.l		YM_DSP_pointeur_sur_table_infos_samples_SID,d5
+	;move.l		YM_DSP_volA,d6
+	;move.l		YM_DSP_pointeur_sur_source_du_volume_A,d7
+
+	;lea			buffer_de_debug,a1
+	;move.l		pointeur_buffer_de_debug,a2
+
 ; $4102
 	nop
 	
@@ -400,6 +419,9 @@ YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
 	addq.l		#1,YM_LZ4_nb_bloc_LZ4_disponibles
 	.endif
 
+	.if		display_infos_during_replay=1
+
+
 ; gestion affichage ligne indicateurs
 ;envA
 	move.b		#" ",d0
@@ -441,7 +463,7 @@ YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
 	move.b		d0,chaine_replay_NA
 ; SID A
 	move.b		#" ",d0
-	cmp.l		#0,	YM_DSP_pointeur_sample_SID_voie_A
+	cmp.l		#0,	YM_DSP_increment_sample_SID_voie_A
 	beq.s		.sidA
 	move.b		#"S",d0
 .sidA:
@@ -470,7 +492,7 @@ YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
 	move.b		d0,chaine_replay_NB
 ; SID B
 	move.b		#" ",d0
-	cmp.l		#0,	YM_DSP_pointeur_sample_SID_voie_B
+	cmp.l		#0,	YM_DSP_increment_sample_SID_voie_B
 	beq.s		.sidB
 	move.b		#"S",d0
 .sidB:
@@ -499,7 +521,7 @@ YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
 	move.b		d0,chaine_replay_NC
 ; SID C
 	move.b		#" ",d0
-	cmp.l		#0,	YM_DSP_pointeur_sample_SID_voie_C
+	cmp.l		#0,	YM_DSP_increment_sample_SID_voie_C
 	beq.s		.sidC
 	move.b		#"S",d0
 .sidC:
@@ -530,11 +552,9 @@ YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
 
 
 
-	move.l		a0,-(sp)
 	lea			chaine_replay_YM7,a0
 	bsr			print_string
-	move.l		(sp)+,a0
-
+	
 
 
 ; compteur de temps
@@ -588,6 +608,50 @@ YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
 	moveq	#9,d0
 	bsr		print_caractere
 
+	.endif
+
+	.if		display_infos_debug=1
+	
+	move.l	YM_DSP_registre8,d0
+	bsr		print_nombre_2_chiffres_force
+	
+	move.l	#' ',d0
+	bsr		print_caractere
+
+	move.l	YM_DSP_pointeur_sample_SID_voie_A,d0
+	bsr		print_nombre_hexa_6_chiffres
+	
+	move.l	#' ',d0
+	bsr		print_caractere
+
+	move.l	YM_DSP_increment_sample_SID_voie_A,d0
+	bsr		print_nombre_hexa_6_chiffres
+
+	move.l	#' ',d0
+	bsr		print_caractere
+
+	move.l	YM_DSP_offset_sample_SID_voie_A,d0
+	bsr		print_nombre_hexa_6_chiffres
+
+	move.l	#' ',d0
+	bsr		print_caractere
+
+	move.l	YM_DSP_taille_sample_SID_voie_A,d0
+	bsr		print_nombre_hexa_6_chiffres
+
+	move.l	#' ',d0
+	bsr		print_caractere
+
+	move.l	YM_DSP_volA,d0
+	bsr		print_nombre_hexa_4_chiffres
+
+
+	
+
+; retour a la ligne	
+	moveq	#9,d0
+	bsr		print_caractere
+	.endif
 
 	
 	bra			toto
@@ -600,7 +664,9 @@ YM_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
 VBL:
                 movem.l d0-d7/a0-a6,-(a7)
 				
-				;add.w		#1,BG					; debug pour voir si vivant
+				.if		display_infos_debug=1
+				add.w		#1,BG					; debug pour voir si vivant
+				.endif
 
                 jsr     copy_olist              	; use Blitter to update active list from shadow
 
@@ -1019,12 +1085,14 @@ copy_olist:
 				move.l	#PIXEL16|XADDPHR|PITCH1,A2_FLAGS
 				move.w	#1,d0
 				swap	d0
-				move.l	taille_liste_OP,d1
+				move.l	#fin_ob_liste_originale-ob_liste_originale,d1
 				move.w	d1,d0
 				move.l	d0,B_COUNT
 				move.l	#LFU_REPLACE|SRCEN,B_CMD
 				rts
 
+
+		if		1=0
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
 ;; Simple Object List Routines for a simple life.
@@ -1175,7 +1243,8 @@ stopob:         move.l  #0,(a0)+
                 move.l  #4,(a0)+                ; STOP object!
                 rts
 
-
+		.endif
+		
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;
 ;; Procedure: InitVideo (same as in vidinit.s)
@@ -1244,6 +1313,7 @@ calc_vals:
 
 
 
+	if		1=0
 ; -------------------------------------------
 creer_Object_list:
 ; il faut créer une liste avec :
@@ -1301,7 +1371,7 @@ creer_Object_list:
 	bra.s	.ntsc
 
 .pal:
-	move.l	#560,d0
+	move.l	#560,d0				; 280 lignes
 	move.w	#-1,ntsc_flag
 
 .ntsc:
@@ -1338,7 +1408,11 @@ creer_Object_list:
 	move.l	d0,taille_liste_OP
 
 	rts
+	endif
 
+;----------------------------------------------------
+;     routines YM
+;----------------------------------------------------
 
 ;----------------------------------------------------
 YM_calcul_frequences_Sinus_Sid:
@@ -1439,9 +1513,9 @@ YM_init_ym7:
 	move.l		(sp)+,a0
 
 
-
+	moveq		#0,d0
 	move.w		(a0)+,d0
-	move.w		d0,YM_flag_effets_sur_les_voies					; .w= effet sur la voie. A=bit 0, B=bit 1, C=bit 2
+	move.l		d0,YM_flag_effets_sur_les_voies					; .w= effet sur la voie. A=bit 0, B=bit 1, C=bit 2, bit 3=buzzer , bit 4=Sinus Sid
 
 	moveq.l		#14,d6										; nb d'octet par frame = 14 de base = 14 registres
 	moveq		#1,d1
@@ -1586,7 +1660,7 @@ YM_pas_de_digidrums:
 
 
 
-; TODO : gérer les SID
+;  gérer les SID
 ; - une table qui pointe sur le début du sample SID, fin du sample SID, en RAM normale ( utilisée une fois par replay)
 ; - un sample par SID : .L * taille du SID, volume converti : RAM DSP ( lue en I2S )
 
@@ -2744,131 +2818,121 @@ YM_DSP_replay_sample_pas_de_digidrums_voie_C:
 ; gerer les SID
 ;--------------------------
 
-
-; ----- gerer SID canal A
-	movei	#YM_DSP_pointeur_sample_SID_voie_A,R27					
-	movei	#YM_DSP_replay_sample_pas_de_SID_voie_A,R24
-	load	(R27),R26				; R26 = pointeur sur sample SID voie A
-	cmpq	#0,R26
-	jump	eq,(R24)
-; on a un SID voie A
-	addq	#4,R27					; R27 pointe sur YM_DSP_increment_sample_SID_voie_A
-	load	(R27),R21				; R1=increment en 16:16
-	addq	#4,R27					; R27 pointe sur YM_DSP_offset_sample_SID_voie_A
-	load	(R27),R23				; R23 = YM_DSP_offset_sample_SID_voie_A : offset : 16:16 / entier:virgule
-	move	R23,R22					; R22 = offset 16:16
-	addq	#4,R27					; R27 pointe sur YM_DSP_taille_sample_SID_voie_A
-	shrq	#16,R23					; partie entiere de l'offset 16:16
-	shlq	#2,R23					; *4 / .L par valeur de volume de sample SID
-	add		R23,R26					; pointeur sample sid + ( partie entiere de l'offset * 4))
-	load	(R26),R25				; R25=volume du SID
-	movei	#YM_DSP_volA,R24
-	movei	#YM_DSP_pointeur_sur_source_du_volume_A,R23
-	store	R25,(R24)				; met le volume du SID dans volume du canal
-	store	R24,(R23)
-	
-	
-; R22=offset 16:16
-; R21=increment 16:16
-
-	add		R21,R22					; offset = offset + increment // 16:16
-	load	(R27),R23				; R23=taille sample en 16:16 // YM_DSP_taille_sample_SID_voie_A
-	cmp		R23,R22					; comparaison taille et offset actuel, en 16:16
-	jr		mi,YM_DSP_replay_sample_SID_pas_de_bouclage_canal_A
+;R19/R20/R21/R22/R23/R24/R25/R26/R27
+; voie A
+	movei		#YM_DSP_increment_sample_SID_voie_A,R27
+	load		(R27),R27						; R27 = YM_DSP_increment_sample_SID_voie_A
+	movei		#YM_DSP_replay_sample_pas_de_SID_voie_A,R19
+	cmpq		#0,R27
+	jump		eq,(R19)
 	nop
-; ici on boucle
-; mise a zero de l'offset
-	movei	#$0000FFFF,R21
-	and		R21,R22					; 16 bits du haut de R22 = 0
-YM_DSP_replay_sample_SID_pas_de_bouclage_canal_A:
-	subq	#4,R27					; on ramene R27 sur offset
-	or		R27,R27
-	store	R22,(R27)
+	movei		#YM_DSP_offset_sample_SID_voie_A,R26
+	load		(R26),R25						; R25=offset 16:16
+	movei		#YM_DSP_taille_sample_SID_voie_A,R24
+	add			R27,R25							; offset + increment
+	load		(R24),R24
+	
+	cmp			R24,R25
+	jr			mi,YM_DSP_replay_sample_SID_pas_de_bouclage_canal_A
+	nop
+; bouclage
+	shlq		#16,R25
+	shrq		#16,R25				; elimine 16 bits du haut de l'offset
 
+YM_DSP_replay_sample_SID_pas_de_bouclage_canal_A:
+
+	store		R25,(R26)			; on stocke l'offset incrementé
+
+	movei		#YM_DSP_pointeur_sample_SID_voie_A,R24
+	shrq		#16,R25
+	shlq		#2,R25
+	load		(R24),R24			; R24 = pointeur sur le sample SID
+	add			R25,R24
+	movei		#YM_DSP_volA,R27
+	load		(R24),R23			; R23 = volume du sample SID
+
+
+	movei	#YM_DSP_pointeur_sur_source_du_volume_A,R26
+	store	R23,(R27)				; met le volume du SID dans volume du canal
+	store	R27,(R26)
 YM_DSP_replay_sample_pas_de_SID_voie_A:
 
-; ----- gerer SID canal B
-	movei	#YM_DSP_pointeur_sample_SID_voie_B,R27					
-	movei	#YM_DSP_replay_sample_pas_de_SID_voie_B,R24
-	load	(R27),R26				; R26 = pointeur sur sample SID voie A
-	cmpq	#0,R26
-	jump	eq,(R24)
-; on a un SID voie B
-	addq	#4,R27					; R27 pointe sur YM_DSP_increment_sample_SID_voie_A
-	load	(R27),R21				; R1=increment en 16:16
-	addq	#4,R27					; R27 pointe sur YM_DSP_offset_sample_SID_voie_A
-	load	(R27),R23				; R23 = YM_DSP_offset_sample_SID_voie_A : offset : 16:16 / entier:virgule
-	move	R23,R22					; R22 = offset 16:16
-	addq	#4,R27					; R27 pointe sur YM_DSP_taille_sample_SID_voie_A
-	shrq	#16,R23					; partie entiere de l'offset 16:16
-	shlq	#2,R23					; *4 / .L par valeur de volume de sample SID
-	add		R23,R26					; pointeur sample sid + ( partie entiere de l'offset * 4))
-	load	(R26),R25				; R25=volume du SID
-	movei	#YM_DSP_volB,R24
-	movei	#YM_DSP_pointeur_sur_source_du_volume_B,R23
-	store	R25,(R24)				; met le volume du SID dans volume du canal
-	store	R24,(R23)
-	
-	
-; R22=offset 16:16
-; R21=increment 16:16
-
-	add		R21,R22					; offset = offset + increment // 16:16
-	load	(R27),R23				; R23=taille sample en 16:16 // YM_DSP_taille_sample_SID_voie_A
-	cmp		R23,R22					; comparaison taille et offset actuel, en 16:16
-	jr		mi,YM_DSP_replay_sample_SID_pas_de_bouclage_canal_B
+; voie B
+	movei		#YM_DSP_increment_sample_SID_voie_B,R27
+	load		(R27),R27						; R27 = YM_DSP_increment_sample_SID_voie_B
+	movei		#YM_DSP_replay_sample_pas_de_SID_voie_B,R19
+	cmpq		#0,R27
+	jump		eq,(R19)
 	nop
-; ici on boucle
-; mise a zero de l'offset
-	movei	#$0000FFFF,R21
-	and		R21,R22					; 16 bits du haut de R22 = 0
-YM_DSP_replay_sample_SID_pas_de_bouclage_canal_B:
-	subq	#4,R27					; on ramene R27 sur offset
-	or		R27,R27
-	store	R22,(R27)
+	movei		#YM_DSP_offset_sample_SID_voie_B,R26
+	load		(R26),R25						; R25=offset 16:16
+	movei		#YM_DSP_taille_sample_SID_voie_B,R24
+	add			R27,R25							; offset + increment
+	load		(R24),R24
+	
+	cmp			R24,R25
+	jr			mi,YM_DSP_replay_sample_SID_pas_de_bouclage_canal_B
+	nop
+; bouclage
+	shlq		#16,R25
+	shrq		#16,R25				; elimine 16 bits du haut de l'offset
 
+YM_DSP_replay_sample_SID_pas_de_bouclage_canal_B:
+
+	store		R25,(R26)			; on stocke l'offset incrementé
+
+	movei		#YM_DSP_pointeur_sample_SID_voie_B,R24
+	shrq		#16,R25
+	shlq		#2,R25
+	load		(R24),R24			; R24 = pointeur sur le sample SID
+	add			R25,R24
+	load		(R24),R23			; R23 = volume du sample SID
+
+	movei	#YM_DSP_volB,R27
+	movei	#YM_DSP_pointeur_sur_source_du_volume_B,R26
+	store	R23,(R27)				; met le volume du SID dans volume du canal
+	store	R27,(R26)
 YM_DSP_replay_sample_pas_de_SID_voie_B:
 
-; ----- gerer SID canal C
-	movei	#YM_DSP_pointeur_sample_SID_voie_C,R27					
-	movei	#YM_DSP_replay_sample_pas_de_SID_voie_C,R24
-	load	(R27),R26				; R26 = pointeur sur sample SID voie A
-	cmpq	#0,R26
-	jump	eq,(R24)
-; on a un SID voie C
-	addq	#4,R27					; R27 pointe sur YM_DSP_increment_sample_SID_voie_A
-	load	(R27),R21				; R1=increment en 16:16
-	addq	#4,R27					; R27 pointe sur YM_DSP_offset_sample_SID_voie_A
-	load	(R27),R23				; R23 = YM_DSP_offset_sample_SID_voie_A : offset : 16:16 / entier:virgule
-	move	R23,R22					; R22 = offset 16:16
-	addq	#4,R27					; R27 pointe sur YM_DSP_taille_sample_SID_voie_A
-	shrq	#16,R23					; partie entiere de l'offset 16:16
-	shlq	#2,R23					; *4 / .L par valeur de volume de sample SID
-	add		R23,R26					; pointeur sample sid + ( partie entiere de l'offset * 4))
-	load	(R26),R25				; R25=volume du SID
-	movei	#YM_DSP_volC,R24
-	movei	#YM_DSP_pointeur_sur_source_du_volume_C,R23
-	store	R25,(R24)				; met le volume du SID dans volume du canal
-	store	R24,(R23)
-	
-	
-; R22=offset 16:16
-; R21=increment 16:16
-
-	add		R21,R22					; offset = offset + increment // 16:16
-	load	(R27),R23				; R23=taille sample en 16:16 // YM_DSP_taille_sample_SID_voie_A
-	cmp		R23,R22					; comparaison taille et offset actuel, en 16:16
-	jr		mi,YM_DSP_replay_sample_SID_pas_de_bouclage_canal_C
+; voie C
+	movei		#YM_DSP_increment_sample_SID_voie_C,R27
+	load		(R27),R27						; R27 = YM_DSP_increment_sample_SID_voie_C
+	movei		#YM_DSP_replay_sample_pas_de_SID_voie_C,R19
+	cmpq		#0,R27
+	jump		eq,(R19)
 	nop
-; ici on boucle
-; mise a zero de l'offset
-	movei	#$0000FFFF,R21
-	and		R21,R22					; 16 bits du haut de R22 = 0
-YM_DSP_replay_sample_SID_pas_de_bouclage_canal_C:
-	subq	#4,R27					; on ramene R27 sur offset
-	store	R22,(R27)
+	movei		#YM_DSP_offset_sample_SID_voie_C,R26
+	load		(R26),R25						; R25=offset 16:16
+	movei		#YM_DSP_taille_sample_SID_voie_C,R24
+	add			R27,R25							; offset + increment
+	load		(R24),R24
+	
+	cmp			R24,R25
+	jr			mi,YM_DSP_replay_sample_SID_pas_de_bouclage_canal_C
+	nop
+; bouclage
+	shlq		#16,R25
+	shrq		#16,R25				; elimine 16 bits du haut de l'offset
 
+YM_DSP_replay_sample_SID_pas_de_bouclage_canal_C:
+
+	store		R25,(R26)			; on stocke l'offset incrementé
+
+	movei		#YM_DSP_pointeur_sample_SID_voie_C,R24
+	shrq		#16,R25
+	shlq		#2,R25
+	load		(R24),R24			; R24 = pointeur sur le sample SID
+	add			R25,R24
+	load		(R24),R23			; R23 = volume du sample SID
+
+	movei	#YM_DSP_volC,R27
+	movei	#YM_DSP_pointeur_sur_source_du_volume_C,R26
+	store	R23,(R27)				; met le volume du SID dans volume du canal
+	store	R27,(R26)
 YM_DSP_replay_sample_pas_de_SID_voie_C:
+
+
+
 
 
 ;---- ====> R18 = mask current Noise ----
@@ -2894,7 +2958,6 @@ YM_DSP_replay_sample_pas_de_SID_voie_C:
 	load	(R26),R25
 		
 	add		R27,R25
-	or		R25,R25
 	store	R25,(R26)							; YM_DSP_position_offset_A
 	shrq	#31,R25
 	neg		R25									; 0 devient 0, 1 devient -1 ($FFFFFFFF)
@@ -2909,12 +2972,20 @@ YM_DSP_replay_sample_pas_de_SID_voie_C:
 
 ; Noise AND Tone
 
-	movei	#YM_DSP_pointeur_sur_source_du_volume_A,R20
+	movei	#YM_DSP_pointeur_sur_source_du_volume_A,R26
 	and		R18,R25					; R25 = Noise and Tone
 
-
-	load	(R20),R20				; R20 = pointeur sur la source de volume pour le canal A
-	load	(r20),R20				; R20=volume pour le canal A 0 à 32767
+	load	(R26),R27				; R20 = pointeur sur la source de volume pour le canal A
+	load	(r27),R20				; R20=volume pour le canal A 0 à 32767
+	
+	;movei	#pointeur_buffer_de_debug,R26
+	;load	(R26),R18
+	;store	R20,(R18)
+	;addq	#4,R18
+	;store	R18,(R26)
+	;nop
+	
+	
 	and		R25,R20					; R20=volume pour le canal A
 ; R20 = sample canal A
 
@@ -3044,12 +3115,6 @@ YM_DSP_replay_sample_pas_de_Sinus_SID:
 	.endif
 	
 	.if		STEREO=1
-	movei	#$FFFF,R17
-	;movei	#100,R19
-	;and		R17,R20
-	;and		R17,R21
-	;and		R17,R22
-	;and		R17,R23
 
 	movei	#YM_DSP_Voie_A_pourcentage_Droite,R24
 	move	R20,R26					; R26=A
@@ -3066,8 +3131,6 @@ YM_DSP_replay_sample_pas_de_Sinus_SID:
 	mult	R24,R18
 	shrq	#STEREO_shit_bits,R18
 
-	and		R17,R26
-	and		R17,R25
 	add		R26,R25					; R27=A+B
 
 	movei	#YM_DSP_Voie_D_pourcentage_Droite,R24
@@ -3075,10 +3138,7 @@ YM_DSP_replay_sample_pas_de_Sinus_SID:
 	mult	R24,R26
 	shrq	#STEREO_shit_bits,R26
 	
-	and		R17,R18
 	add		R18,R25
-	;or		R26,R26
-	and		R17,R26
 	add		R26,R25					; R25=droite
 
 
@@ -3094,8 +3154,6 @@ YM_DSP_replay_sample_pas_de_Sinus_SID:
 	mult	R24,R22
 	shrq	#STEREO_shit_bits,R22
 
-	and		R17,R20
-	and		R17,R23
 	add		R20,R23					; R23=A+B
 
 	movei	#YM_DSP_Voie_D_pourcentage_Gauche,R24
@@ -3104,10 +3162,7 @@ YM_DSP_replay_sample_pas_de_Sinus_SID:
 
 	movei	#32768,R27
 	
-	and		R17,R22
 	add		R22,R23
-	;or		R21,R21
-	and		R17,R21
 	add		R21,R23					; R23=gauche
 
 	sub		R27,R25
@@ -3163,8 +3218,10 @@ YM_DSP_replay_sample_pas_de_Sinus_SID:
 ; ---------------- Timer 1 ------------------
 ;--------------------------------------------
 ; autorise interruptions, pour timer I2S
+	.if		I2S_during_Timer1=1
 	bclr	#3,r13		; clear IMASK
 	store	r13,(r16)	; restore flags
+	.endif
 
 DSP_LSP_routine_interruption_Timer1:
 	.if		DSP_DEBUG_T1
@@ -3182,7 +3239,7 @@ DSP_LSP_routine_interruption_Timer1:
  ; gestion timer deplacé sur :
 ; R12(R28)/R13(R29)/R16(R30)
 ; +
-; R0/R1/R2/R3/R4/R5/R6/R7/R8/R9/R10 + R14
+; R0/R1/R2/R3/R4/R5/R6/R7/R8/R9/R10/R11 + R14
 ; -------------------------------------------------------------------------------
 	;-------------------------------------------------------------------------------------------------
 	movei		#YM_pointeur_actuel_ymdata,R0
@@ -3497,14 +3554,19 @@ DSP_lecture_registre11_12_zero:
 
 DSP_lecture_registre13_pas_env:
 
+; ----------------
+; registre R11 = flag effets sur les voies : A=bit 0, B=bit 1, C=bit 2, bit 3=buzzer , bit 4=Sinus Sid
+	movei	#YM_flag_effets_sur_les_voies,R11
+	load	(R11),R11
 
 ;--------------------------------
 ; gestion des effets par voie
 ; ------- effet sur voie A ?
-	movei		#YM_flag_effets_voie_A,R3
-	load		(R3),R3
+	;movei		#YM_flag_effets_voie_A,R3
+	;load		(R3),R3
 	movei		#DSP_lecture_registre_effet_voie_A_pas_d_effet,R4
-	cmpq		#0,R3
+	;cmpq		#0,R3
+	btst		#0,R11
 	jump		eq,(R4)
 	
 	loadb		(R1),R2						; octet 1 effet sur la voie : 8 bits du haut = index prediv ( sur 3 bits 0-7 )
@@ -3617,7 +3679,6 @@ DSP_lecture_registre_effet_voie_A_pas_de_DG:
 	and			R5,R7					; virgule remise a zero
 DSP_lecture_registre_effet_voie_A_pas_de_reset_virgule_SID:
 
-
 	moveq		#%111,R5					; mask
 	movei		#YM_DSP_table_prediviseur,R6
 	and			R5,R2						; 3 bits de R2 = prediviseur
@@ -3680,7 +3741,7 @@ DSP_lecture_registre_effet_voie_A_tailles_egales_pas_de_raz_offset:
 DSP_lecture_registre_effet_voie_A_pas_de_SID:
 ; il faut faire un SIDstop voie A
 	moveq		#0,R4
-	movei		#YM_DSP_pointeur_sample_SID_voie_A,R2
+	movei		#YM_DSP_increment_sample_SID_voie_A,R2
 	store		R4,(R2)				; stop le SID canal A
 
 
@@ -3689,10 +3750,11 @@ DSP_lecture_registre_effet_voie_A_pas_d_effet:
 ; -----------------------------
 ; ------- effet sur voie B ?
 
-	movei		#YM_flag_effets_voie_B,R3
-	load		(R3),R3
+;	movei		#YM_flag_effets_voie_B,R3
+;	load		(R3),R3
 	movei		#DSP_lecture_registre_effet_voie_B_pas_d_effet,R4
-	cmpq		#0,R3
+	;cmpq		#0,R3
+	btst		#1,R11
 	jump		eq,(R4)
 	
 	loadb		(R1),R2						; octet 1 effet sur la voie : 8 bits du haut = index prediv ( sur 3 bits 0-7 )
@@ -3822,7 +3884,7 @@ DSP_lecture_registre_effet_voie_B_tailles_egales_pas_de_raz_offset:
 DSP_lecture_registre_effet_voie_B_pas_de_SID:
 ; il faut faire un SIDstop voie B
 	moveq		#0,R4
-	movei		#YM_DSP_pointeur_sample_SID_voie_B,R2
+	movei		#YM_DSP_increment_sample_SID_voie_B,R2
 	store		R4,(R2)				; stop le SID canal B
 
 
@@ -3832,10 +3894,11 @@ DSP_lecture_registre_effet_voie_B_pas_d_effet:
 
 ; -----------------------------
 ; ------- effet sur voie C ?
-	movei		#YM_flag_effets_voie_C,R3
-	load		(R3),R3
+	;movei		#YM_flag_effets_voie_C,R3
+	;load		(R3),R3
 	movei		#DSP_lecture_registre_effet_voie_C_pas_d_effet,R4
-	cmpq		#0,R3
+	;cmpq		#0,R3
+	btst		#2,R11
 	jump		eq,(R4)
 	
 	loadb		(R1),R2						; octet 1 effet sur la voie : 8 bits du haut = index prediv ( sur 3 bits 0-7 )
@@ -3969,7 +4032,7 @@ DSP_lecture_registre_effet_voie_C_tailles_egales_pas_de_raz_offset:
 DSP_lecture_registre_effet_voie_C_pas_de_SID:
 ; il faut faire un SIDstop voie C
 	moveq		#0,R4
-	movei		#YM_DSP_pointeur_sample_SID_voie_C,R2
+	movei		#YM_DSP_increment_sample_SID_voie_C,R2
 	store		R4,(R2)				; stop le SID canal C
 
 
@@ -3980,10 +4043,11 @@ DSP_lecture_registre_effet_voie_C_pas_d_effet:
 ; -----------------------------
 ; gestion effet Buzzer
 	.if			DSP_DEBUG_BUZZER=0
-	movei		#YM_flag_effets_Buzzer,R3
-	load		(R3),R3
+	;movei		#YM_flag_effets_Buzzer,R3
+	;load		(R3),R3
 	movei		#DSP_lecture_registre_effet_Buzzer_pas_d_effet,R4
-	cmpq		#0,R3
+	btst		#3,R11
+	;cmpq		#0,R3
 	jump		eq,(R4)
 	;nop
 
@@ -4071,10 +4135,11 @@ DSP_lecture_registre_effet_Buzzer_pas_d_effet:
 
 ; -----------------------------
 ; gestion effet Sinus Sid
-	movei		#YM_flag_effets_Sinus_Sid,R3
-	load		(R3),R3
+	;movei		#YM_flag_effets_Sinus_Sid,R3
+	;load		(R3),R3
 	movei		#DSP_lecture_registre_effet_Sinus_Sid_pas_d_effet,R4
-	cmpq		#0,R3
+	;cmpq		#0,R3
+	btst		#4,R11
 	jump		eq,(R4)
 	nop
 ; on doit gérer un sinus Sid
@@ -4117,12 +4182,11 @@ DSP_lecture_registre_effet_Sinus_Sid_pas_d_effet:
 
 ;---> precalculer les valeurs qui ne bougent pas pendant 1 VBL entiere	
 
-; debug avec buffer pour voir les valeurs
+; debug raz pointeur buffer debug
 	;movei		#pointeur_buffer_de_debug,R0
 	;movei		#buffer_de_debug,R1
-	;store		R1,(R0)
-	
-
+	;store		R1,(R0)	
+	;nop
 
 
 	.if			YM_avancer=1
@@ -4265,8 +4329,6 @@ DSP_routine_init_DSP:
 	div		R11,R10
 	or		R10,R10
 	move	R10,R13
-	;movei	#EDZTMP1,R12
-	;store	R13,(R12)
 	
 	subq	#1,R13					; -1 pour parametrage du timer 1
 	
@@ -4381,13 +4443,6 @@ YM_DSP_boucle_principale_decompression_d_un_bloc_pas_dernier_bloc:
 	add		R0,R22		; pointeur actuel sur source LZ4 + taille du bloc LZ4 = position du nouveau bloc LZ4
 	store	R22,(R10)
 
-; debug
-	;movei	#EDZTMP1,R13
-	;store	R20,(R13)
-	;movei	#EDZTMP2,R13
-	;store	R21,(R13)
-	;movei	#EDZTMP3,R13
-	;store	R0,(R13)
 
 
 ; input: R20 : packed buffer
@@ -4651,7 +4706,7 @@ YM_DSP_pointeur_table_samples_Sinus_Sid:		dc.l		0		; pointeur sur la table des i
 
 
 YM_DSP_table_de_volumes:
-	dc.l				62,161,265,377,580,774,1155,1575,2260,3088,4570,6233,9330,13187,21220,32767
+	dc.l				0,161,265,377,580,774,1155,1575,2260,3088,4570,6233,9330,13187,21220,32767
 ; table volumes Amiga:
 	;dc.l				$00*$c0, $00*$c0, $00*$c0, $00*$c0, $01*$c0, $02*$c0, $02*$c0, $04*$c0, $05*$c0, $08*$c0, $0B*$c0, $10*$c0, $18*$c0, $22*$c0, $37*$c0, $55*$c0
 	
@@ -4670,6 +4725,7 @@ YM_DSP_table_prediviseur:
 	dc.l		0,4,10,16,50,64,100,200	
 
 ; flags pour nb octets à lire
+YM_flag_effets_sur_les_voies:			dc.l				0
 YM_flag_effets_voie_A:		dc.l		0
 YM_flag_effets_voie_B:		dc.l		0
 YM_flag_effets_voie_C:		dc.l		0
@@ -4877,25 +4933,28 @@ YM_table_frequences_Sinus_Sid_Amiga:		dc.w	566, 283, 141, 141
 
 
 fichier_ym7:
+	
+;OK
+	;.incbin			"YM/MadMax_Solidify.ym7"				; SID voie A
+	;.incbin			"YM/Mad_Max_Ajh_99.ym7"					; SID voie A
+	;.incbin			"YM/Tao_Prelude.ym7"
+	;.incbin				"YM/Scavenger_Synical.ym7"
 	;.incbin				"YM/Cube_Crystallized.ym7"				; 50 Hz, env voie B des le debut, digidrums voie B / pas de Sid, pas de D, pas de buzzer
-
 	;.incbin				"YM/Gwem_Operation707.ym7"
 	; .incbin				"YM/Gwem_Gwem_Camp.ym7"					; 57 HZ/SID/D
-	;.incbin			"YM/Mad_Max_Ajh_99.ym7"					; SID
 	;.incbin			"YM/505_Pulse.ym7"						; SID/
 	;.incbin			"YM/505_Oxygene.ym7"							; 51 hz
 	;.incbin			"YM/UltraSyd_Thunderdome.ym7"					; 69 HZ
 	;.incbin			"YM/Gwem_Stardust_Memory.ym7"				; D/Sinus Sid + Sid
 	;.incbin			"YM/Dma_Sc_Galaxy_Trip.ym7"				; D/Sinus Sid + Sid 
 	;.incbin			"YM/505_Robost.ym7"						; D/sinus Sid
-	.incbin			"YM/Cube_Bullet_Sequence.ym7"				; SID + Buzzer
+	;.incbin			"YM/Cube_Bullet_Sequence.ym7"				; SID + Buzzer
 	;.incbin			"YM/Gwem_flash_of_the_rom.ym7"			; SID + Buzzer + 59 Hz
-	
 	;.incbin			"YM/Tao_Ultimate_Medley_Part_1.ym7"		; 200 HZ = fait plus de 2 mo decompressé
 	;.incbin		"YM/Mad_Max_Buzzer.ym7"					; YM7 buzzer + SID
 	;.incbin			"YM/Tomchi_Sidified.ym7"					; SID a partir de la 2eme frame. (+1)
 	;.incbin		"YM/DMA_Sc_Fantasia_main.ym7"					; YM7 SID
-	;.incbin			"YM/Furax_Virtualescape_main.ym7"				; YM7 SID
+	.incbin			"YM/Furax_Virtualescape_main.ym7"				; YM7 SID
 	;.incbin		"YM/MadMax_Virtual_Esc_End.ym7"			; YM7 SID voie A
 	;.incbin			"YM/LotekStyle_Alpha_Proxima.ym7"		; SID voie C au debut
 	;.incbin		"YM/PYM_main_menu.ym7"					; YM7 avec enveloppe et digidrums - OK
@@ -4910,6 +4969,30 @@ fichier_ym7:
 
 debut_ram_libre_DSP:		dc.l			YM_DSP_fin
 debut_ram_libre:			dc.l			FIN_RAM
+
+        .68000
+		.dphrase
+ob_liste_originale:           				 ; This is the label you will use to address this in 68K code
+        .objproc 							   ; Engage the OP assembler
+		.dphrase
+
+        .org    ob_list_courante			 ; Tell the OP assembler where the list will execute
+;
+        branch      VC < 0, .stahp    			 ; Branch to the STOP object if VC < 0
+        branch      VC > 265, .stahp   			 ; Branch to the STOP object if VC > 241
+			; bitmap data addr, xloc, yloc, dwidth, iwidth, iheight, bpp, pallete idx, flags, firstpix, pitch
+        bitmap      ecran1, 16, 26, nb_octets_par_ligne/8, nb_octets_par_ligne/8, 246-26,3
+		;bitmap		ecran1,16,24,40,40,255,3
+        jump        .haha
+.stahp:
+        stop
+.haha:
+        jump        .stahp
+		
+		.68000
+		.dphrase
+fin_ob_liste_originale:
+
 
 	.bss
 	.phrase
@@ -4926,7 +5009,6 @@ YM_ecart_entre_frames_dernier_bloc:		ds.l				1
 YM_LZ4_numero_dernier_bloc_decompresse:			ds.l		1
 
 YM_nb_registres_par_frame:				ds.w				1
-YM_flag_effets_sur_les_voies:			ds.w				1
 	.phrase
 
 YM_pointeur_origine_ymdata:		ds.l		1
@@ -4953,9 +5035,9 @@ YM_LZ4_nb_bloc_LZ4_disponibles:					ds.l		1
 ;		ds.l		1
 ;	.endr
 
-;EDZTMP1:							ds.l			1
 ;pointeur_buffer_de_debug:		ds.l			1
-;buffer_de_debug:				ds.l			480
+;buffer_de_debug:				ds.l			1000
+;fin_buffer_de_debug:
 
 _50ou60hertz:			ds.l	1
 ntsc_flag:				ds.w	1
