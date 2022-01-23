@@ -159,12 +159,14 @@ boucle_clean_BSS:
 	move.w		JOYBUTS ,d0
 
 	move.l		#26593900,frequence_Video_Clock			; PAL
+	move.l		#415530,frequence_Video_Clock_divisee
 
 	
 	btst		#4,d0
 	beq.s		jesuisenpal
 jesuisenntsc:
 	move.l		#26590906,frequence_Video_Clock			; NTSC
+	move.l		#415483,frequence_Video_Clock_divisee
 jesuisenpal:
 
 
@@ -257,7 +259,7 @@ boucle_copie_bloc_DSP:
 ; $40FC
 	; set timers
 	move.l		#DSP_Audio_frequence,d0
-	move.l		#415530,d1
+	move.l		frequence_Video_Clock_divisee,d1
 	lsl.l		#8,d1
 	divu		d0,d1
 	and.l		#$ffff,d1
@@ -271,7 +273,7 @@ boucle_copie_bloc_DSP:
 	add.l	d1,d1		; * 2 
 	add.l	d1,d1		; * 2 
 	lsl.l	#4,d1		; * 16
-	move.l	#26593900,d0
+	move.l	frequence_Video_Clock,d0
 	divu	d1,d0			; 26593900 / ( (16*2*2*(+1))
 	and.l		#$ffff,d0
 	move.l	d0,DSP_frequence_de_replay_reelle_I2S
@@ -5001,6 +5003,7 @@ DEBUT_BSS:
 ;EDZ_compteur_reset_offset_entier_voie_A:			ds.l	1
 
 frequence_Video_Clock:					ds.l				1
+frequence_Video_Clock_divisee :			.ds.l				1
 
 YM_nombre_de_frames_totales:			ds.l				1
 YM_frequence_replay:					ds.l				1
