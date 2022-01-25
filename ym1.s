@@ -45,7 +45,7 @@
 	include	"jaguar.inc"
 
 ; STEREO
-STEREO									.equ			1			; 0=mono / 1=stereo
+STEREO									.equ			0			; 0=mono / 1=stereo
 STEREO_shit_bits						.equ			4
 ; stereo weights : 0 to 16
 YM_DSP_Voie_A_pourcentage_Gauche		.equ			14
@@ -3111,9 +3111,9 @@ YM_DSP_replay_sample_pas_de_Sinus_SID:
 	add		R22,R20					; + canal C
 	movei	#L_I2S,r26
 	sub		R27,R20					; resultat signé sur 16 bits
+	movei	#L_I2S+4,r24
 	store	r20,(r26)				; write right channel
-	addq	#4,R26
-	store	r20,(r26)				; write left channel
+	store	r20,(r24)				; write left channel
 	.endif
 
 	
@@ -3169,13 +3169,12 @@ YM_DSP_replay_sample_pas_de_Sinus_SID:
 	add		R21,R23					; R23=gauche
 
 	sub		R27,R25
-	sub		R27,R23
-
-	
 	movei	#L_I2S,r26
+	sub		R27,R23
+	movei	#L_I2S+4,r24
+
 	store	r25,(r26)				; write right channel
-	addq	#4,R26
-	store	r23,(r26)				; write left channel
+	store	r23,(r24)				; write left channel
 
 	.endif
 
