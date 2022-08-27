@@ -1,3 +1,5 @@
+; revoir table de volumes...
+
 ; YM7 sur Jaguar
 ;
 ; TODO :
@@ -27,7 +29,7 @@
 ;	OK - forcer pointeur sur volume pour digidrums dans Timer 1
 ;	OK - stéréo !!!! : placer 1 voie 100% a gauche, 1 voie 100% a droite, et 1 voie 60% a gauche/40% a droite : utiliser des % pour droite et gauche pour chaque canal A B C D, et multiplier
 ;	BOF ?- placer la copie des 2 samples en tout debut de routine interruption I2S ( vue la variabilité liée à la génération du Noise )
-;	- utiliser l'assembleur pour Object Processor
+;	NON - utiliser l'assembleur pour Object Processor
 
 ; timer I2S = generation des samples
 ; Timer 1 = routine de replay
@@ -371,7 +373,7 @@ toto:
 	;move.l		pointeur_buffer_de_debug,a2
 
 ; $4102
-	nop
+	;nop
 	
 	
 ok_toto:
@@ -3531,6 +3533,9 @@ DSP_lecture_registre11_12_zero:
 
 	movei		#YM_DSP_registre13,R6
 
+	movei		#YM_DSP_registre13,R6
+	move		R2,R5
+	bclr		#7,R5					; 
 	add			R8,R1
 
 	store		R2,(R6)					; sauvegarde la valeur env shape registre 13
@@ -4088,7 +4093,7 @@ DSP_lecture_registre_effet_voie_C_pas_d_effet:
 	load		(R3),R7						; R7 = offset envbuzzer 16:16
 
 ; utilisés : R1/R2/R3/R5/R6/R7/R8/R9
-	btst		#6,R2						; bit 13-7
+	btst		#5,R2						; bit 13->5
 	jr			ne,DSP_lecture_registre_effet_Buzzer_clear_offset_envbuzzer_partie_entiere
 	nop
 
@@ -4945,7 +4950,8 @@ fichier_ym7:
 	;.incbin				"YM/Gwem_Operation707.ym7"
 	; .incbin				"YM/Gwem_Gwem_Camp.ym7"					; 57 HZ/SID/D
 	;.incbin			"YM/505_Pulse.ym7"						; SID/
-	.incbin			"YM/505_Oxygene.ym7"							; 51 hz
+	;.incbin			"YM/505_Oxygene.ym7"							; 51 hz
+	.incbin			"YM/Jess_STTF.ym7"
 	;.incbin			"YM/UltraSyd_Thunderdome.ym7"					; 69 HZ
 	;.incbin			"YM/Gwem_Stardust_Memory.ym7"				; D/Sinus Sid + Sid
 	;.incbin			"YM/Dma_Sc_Galaxy_Trip.ym7"				; D/Sinus Sid + Sid 
@@ -4966,6 +4972,9 @@ fichier_ym7:
 	;.incbin		"YM/Decade_boot.ym7"					; YM7 avec env
 	;.incbin			"YM/CountZero_Decade_Demo_Boot.ym7.ym7"	; 
 	;.incbin			"YM/Floopy_Cassiope.ym7"					; SID // destructuré
+	;.incbin				"YM/syntaxterror_loader.ym7"
+	;.incbin			"YM/Madmax_Fletch.ym7"
+	;.incbin			"YM/Jess_SnowLeopardOverture.ym7"
 
 	.even
 
