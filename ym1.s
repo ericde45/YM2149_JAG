@@ -3532,13 +3532,11 @@ DSP_lecture_registre11_12_zero:
 	loadb		(R1),R2						; registre 13 = Envelope shape control
 
 	movei		#YM_DSP_registre13,R6
-
-	movei		#YM_DSP_registre13,R6
 	move		R2,R5
 	bclr		#7,R5					; 
 	add			R8,R1
 
-	store		R2,(R6)					; sauvegarde la valeur env shape registre 13
+	store		R5,(R6)					; sauvegarde la valeur env shape registre 13
 
 ; tester si bit 7 = 1 => ne pas modifier l'env en cours
 
