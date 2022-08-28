@@ -4079,7 +4079,7 @@ DSP_lecture_registre_effet_voie_C_pas_d_effet:
 	load		(R3),R3
 	load		(R4),R4
 	bclr		#7,R3						; clear le bit 7 $80
-	shlq		#3,R3						; *8
+	shlq		#3,R3						; *8 : 
 	add			R3,R4
 	load		(R4),R5						; R5=pointeur sur envbuzzer = liste d'env
 	addq		#4,R4
